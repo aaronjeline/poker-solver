@@ -43,24 +43,22 @@ pub fn run_search(num_players: usize, search: SearchFn) -> std::io::Result<()> {
 }
 
 pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
-    const POP_SIZE: usize = 6;
-    const NUM_KIDS: usize = 3;
+    const POP_SIZE: usize = 10;
+    const NUM_CROSSOVERS: usize = 15; // Number of crossover children to create
+    const NUM_MUTATIONS: usize = 15;  // Number of mutations to create
     let start = Deck::new_deck_order();
     let mut rng = oorandom::Rand32::new(4);
-    let mut population = Vec::with_capacity(POP_SIZE);
 
     eprintln!("  🧬 Initializing population (size: {})...", POP_SIZE);
-    // Initialize the population
+    // Initialize the population and evaluate fitness
+    let mut scored_population: Vec<(Deck, usize)> = Vec::with_capacity(POP_SIZE);
     for _ in 0..POP_SIZE {
-        population.push(start.clone().shuffle(&mut rng));
+        let deck = start.clone().shuffle(&mut rng);
+        let score = num_wins(num_players, &deck, &table);
+        scored_population.push((deck, score));
     }
 
-    // Evaluate initial population
-    let initial_scores: Vec<usize> = population
-        .iter()
-        .map(|member| num_wins(num_players, member, &table))
-        .collect();
-    let initial_best = *initial_scores.iter().max().unwrap();
+    let initial_best = scored_population.iter().map(|(_, score)| *score).max().unwrap();
     eprintln!("  ✓ Initial population created");
     eprintln!("  📊 Initial best score: {}/{}", initial_best, MAX_WINS);
     eprintln!();
@@ -71,52 +69,58 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
     loop {
         generation += 1;
 
+        // Extract just the decks for breeding (we'll re-score offspring)
+        let population: Vec<Deck> = scored_population.iter().map(|(d, _)| d.clone()).collect();
+
         // Phase 1: grow the population via crossover and mutation
-        let mut new_generation = vec![];
+        let mut new_generation: Vec<(Deck, usize)> = Vec::new();
 
-        // Create children through crossover
-        for i in 0..population.len() {
-            for j in (i + 1)..population.len() {
-                // Perform crossover between pairs of parents
+        // Create children through crossover - select random pairs
+        for _ in 0..NUM_CROSSOVERS {
+            let i = rng.rand_range(0..population.len() as u32) as usize;
+            let j = rng.rand_range(0..population.len() as u32) as usize;
+            if i != j {
                 let child = Deck::crossover(&population[i], &population[j], &mut rng);
-                new_generation.push(child);
+                let score = num_wins(num_players, &child, &table);
+                new_generation.push((child, score));
             }
         }
 
-        // Add mutated versions of existing population
-        for member in population.iter() {
-            for _ in 0..NUM_KIDS {
-                let muts = generate_mutations(&mut rng);
-                let new = member.clone().apply_mutations(muts);
-                new_generation.push(new);
-            }
+        // Create mutations from random population members
+        for _ in 0..NUM_MUTATIONS {
+            let i = rng.rand_range(0..population.len() as u32) as usize;
+            let muts = generate_mutations(&mut rng);
+            let child = population[i].clone().apply_mutations(muts);
+            let score = num_wins(num_players, &child, &table);
+            new_generation.push((child, score));
         }
 
-        new_generation.append(&mut population);
-        new_generation.sort_by_key(|member| num_wins(num_players, member, &table));
+        // Add existing population (already scored)
+        new_generation.append(&mut scored_population);
+
+        // Sort by fitness (higher is better)
+        new_generation.sort_by_key(|(_, score)| *score);
         new_generation.reverse();
 
-        let current_best_score = num_wins(num_players, &new_generation[0], &table);
+        let current_best_score = new_generation[0].1;
 
         // Print progress when we find improvement
         if current_best_score > best_score {
             best_score = current_best_score;
             eprint!(
-                "\r  ⚡ Generation {}: Best score {}/{} (pop: {}→{})",
+                "\r  ⚡ Generation {}: Best score {}/{} (pop: {})",
                 generation,
                 best_score,
                 MAX_WINS,
-                POP_SIZE,
                 new_generation.len()
             );
         } else if generation % 10 == 0 {
             // Print periodic update even without improvement
             eprint!(
-                "\r  🔄 Generation {}: Best score {}/{} (pop: {}→{})",
+                "\r  🔄 Generation {}: Best score {}/{} (pop: {})",
                 generation,
                 best_score,
                 MAX_WINS,
-                POP_SIZE,
                 new_generation.len()
             );
         }
@@ -124,18 +128,15 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
         if current_best_score == MAX_WINS {
             eprintln!();
             eprintln!("  ✓ Perfect deck found after {} generations!", generation);
-            return new_generation[0].clone();
+            return new_generation[0].0.clone();
         }
 
-        // Phase 2: cull the population
-        new_generation.truncate(2);
+        // Phase 2: Selection - keep top 50% to maintain diversity
+        let survivors = new_generation.len() / 2;
+        let survivors = survivors.max(POP_SIZE); // Keep at least POP_SIZE
+        new_generation.truncate(survivors);
 
-        population.push(new_generation[0].clone());
-        population.push(new_generation[0].clone());
-        population.push(new_generation[0].clone());
-        population.push(new_generation[1].clone());
-        population.push(new_generation[1].clone());
-        population.push(new_generation[1].clone());
+        scored_population = new_generation;
     }
 }
 
