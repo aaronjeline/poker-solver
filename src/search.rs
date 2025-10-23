@@ -1,6 +1,7 @@
 use crate::deck::*;
 use crate::game::*;
 use crate::precompute::*;
+use std::sync::Arc;
 
 pub type SearchFn = &'static fn(usize, ScoreTable) -> Deck;
 
@@ -281,29 +282,25 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
     }
 }
 
-pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
-    const MAX_ITERATIONS: usize = 100_000_000;
+fn simulated_annealing_worker(
+    num_players: usize,
+    table: &ScoreTable,
+    thread_id: usize,
+    seed: u64,
+) -> Deck {
     const INITIAL_TEMP: f32 = 10.0;
     const COOLING_RATE: f32 = 0.9999; // Slower cooling = more exploration
     const BASE_RESTART_INTERVAL: usize = 50_000; // Base restart interval
     const MIN_TEMP: f32 = 0.01; // Restart if temperature gets too low
 
-    let mut rng = oorandom::Rand32::new(4);
+    let mut rng = oorandom::Rand32::new(seed);
     let mut best_deck = Deck::new_deck_order().shuffle(&mut rng);
     let mut best_score = num_wins(num_players, &best_deck, &table, REAL);
-
-    eprintln!("   Starting simulated annealing with adaptive restarts...");
-    eprintln!("   Initial score: {}/{}", best_score, max_wins(REAL));
-    eprintln!();
 
     let mut total_iterations = 0;
     let mut restart_count = 0;
 
     loop {
-        if total_iterations >= MAX_ITERATIONS {
-            break;
-        }
-
         restart_count += 1;
 
         // Adaptive restart interval: increases with more restarts
@@ -320,7 +317,7 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
         let mut temperature = INITIAL_TEMP;
         let mut iterations_without_improvement = 0;
 
-        while total_iterations < MAX_ITERATIONS {
+        loop {
             total_iterations += 1;
 
             // Try a random modification using advanced mutations
@@ -352,7 +349,8 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
                     best_deck = current_deck.clone();
                     iterations_without_improvement = 0;
                     eprint!(
-                        "\r  ⚡ Restart {}, Iter {}: Best score {}/{} (temp: {:.4})",
+                        "\r  ⚡ Thread {}, Restart {}, Iter {}: Best score {}/{} (temp: {:.4})",
+                        thread_id,
                         restart_count,
                         total_iterations,
                         best_score,
@@ -362,7 +360,7 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
 
                     if best_score == max_wins(REAL) {
                         eprintln!();
-                        eprintln!("  ✓ Perfect deck found!");
+                        eprintln!("  ✓ Thread {} found perfect deck!", thread_id);
                         return best_deck;
                     }
                 } else {
@@ -378,7 +376,8 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
             // Progress update
             if total_iterations % 10000 == 0 {
                 eprint!(
-                    "\r  🔄 Restart {}, Iter {}: Best {}/{} (current: {}, temp: {:.4})",
+                    "\r  🔄 Thread {}, Restart {}, Iter {}: Best {}/{} (current: {}, temp: {:.4})",
+                    thread_id,
                     restart_count,
                     total_iterations,
                     best_score,
@@ -390,29 +389,74 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
 
             // Check for restart conditions
             if iterations_without_improvement >= restart_interval || temperature < MIN_TEMP {
-                eprint!(
-                    "\r  🔄 Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4}, interval: {})      ",
-                    restart_count,
-                    best_score,
-                    max_wins(REAL),
-                    iterations_without_improvement,
-                    temperature,
-                    restart_interval
-                );
-                eprintln!();
+                if total_iterations % 50000 == 0 {
+                    eprint!(
+                        "\r  🔄 Thread {}, Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4})      ",
+                        thread_id,
+                        restart_count,
+                        best_score,
+                        max_wins(REAL),
+                        iterations_without_improvement,
+                        temperature,
+                    );
+                    eprintln!();
+                }
                 break; // Trigger restart
             }
         }
     }
+}
 
+pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
+    const NUM_THREADS: usize = 10;
+
+    eprintln!("  🔥 Starting parallel simulated annealing with {} threads...", NUM_THREADS);
     eprintln!();
-    eprintln!(
-        "  ⚠️  Max iterations reached after {} restarts. Best found: {}/{}",
-        restart_count,
-        best_score,
-        max_wins(REAL)
-    );
-    best_deck
+
+    let table = Arc::new(table);
+
+    // Spawn threads
+    let handles: Vec<_> = (0..NUM_THREADS)
+        .map(|thread_id| {
+            let table_clone = Arc::clone(&table);
+            let seed = (thread_id as u64) * 1000 + 4; // Different seed for each thread
+
+            std::thread::spawn(move || {
+                simulated_annealing_worker(num_players, &table_clone, thread_id, seed)
+            })
+        })
+        .collect();
+
+    // Wait for the first thread to find a perfect solution
+    // Use a simple blocking approach with crossbeam's select
+    use crossbeam::channel;
+    let (tx, rx) = channel::unbounded();
+
+    // Spawn helper threads to wait on each worker and send results
+    for (thread_id, handle) in handles.into_iter().enumerate() {
+        let tx_clone = tx.clone();
+        std::thread::spawn(move || {
+            match handle.join() {
+                Ok(deck) => {
+                    let _ = tx_clone.send((thread_id, deck));
+                }
+                Err(_) => {
+                    eprintln!("  ⚠️  Thread {} panicked", thread_id);
+                }
+            }
+        });
+    }
+    drop(tx); // Drop the original sender
+
+    // Block until we get the first result
+    if let Ok((winning_thread_id, deck)) = rx.recv() {
+        eprintln!();
+        eprintln!("  🏆 Thread {} won the race!", winning_thread_id);
+        deck
+    } else {
+        eprintln!("  ⚠️  All threads failed");
+        Deck::new_deck_order()
+    }
 }
 
 pub fn analyze_difficulty(num_players: usize, table: ScoreTable, samples: usize) {
