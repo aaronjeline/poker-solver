@@ -10,7 +10,7 @@ pub fn num_wins(num_players: usize, deck: &Deck, table: &ScoreTable) -> usize {
         .count()
 }
 
-fn dealer_wins_game(num_players: usize, deck: Deck, table: &ScoreTable) -> bool {
+pub fn dealer_wins_game(num_players: usize, deck: Deck, table: &ScoreTable) -> bool {
     deal_a_round(num_players, deck).dealer_wins(table)
 }
 

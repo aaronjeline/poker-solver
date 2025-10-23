@@ -2,7 +2,7 @@ use oorandom::Rand32;
 
 use crate::cards::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deck(pub Vec<Card>);
 
 impl Deck {
@@ -11,6 +11,10 @@ impl Deck {
             self = self.apply_mutation(mutation);
         }
         self
+    }
+
+    pub fn swap(&mut self, a: usize, b: usize) {
+        self.0.swap(a, b);
     }
 
     pub fn apply_mutation(mut self, mutation: Mutation) -> Self {
@@ -158,6 +162,21 @@ pub fn generate_mutations(rng: &mut Rand32) -> impl Iterator<Item = Mutation> {
     muts.into_iter()
 }
 
+pub fn generate_adaptive_mutations(rng: &mut Rand32, mutation_rate: f32) -> Vec<AdvancedMutation> {
+    // Number of mutations scales with mutation_rate
+    let num_mutations = if mutation_rate > 0.2 {
+        rng.rand_range(2..5) as usize
+    } else {
+        rng.rand_range(1..3) as usize
+    };
+
+    let mut muts = vec![];
+    for _ in 0..num_mutations {
+        muts.push(AdvancedMutation::generate(rng, mutation_rate));
+    }
+    muts
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Mutation((usize, usize));
 
@@ -169,5 +188,127 @@ impl Mutation {
         let start = a.min(b);
 
         Self((start as usize, end as usize))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum AdvancedMutation {
+    Swap(usize, usize),
+    BlockSwap(usize, usize, usize), // start1, start2, length
+    Reversal(usize, usize),         // start, end
+    Rotation(usize),                // cut position
+    Scramble(usize, usize),         // start, end - shuffle this segment
+}
+
+impl AdvancedMutation {
+    pub fn generate(rng: &mut Rand32, mutation_rate: f32) -> Self {
+        // Higher mutation rate = more aggressive mutations
+        let mutation_type = if mutation_rate > 0.2 {
+            // When stuck, use more aggressive mutations
+            rng.rand_range(0..5)
+        } else {
+            // When progressing, favor simpler mutations (swap, reversal)
+            match rng.rand_range(0..10) {
+                0..=5 => 0, // Swap
+                6..=8 => 2, // Reversal
+                _ => 1,     // BlockSwap
+            }
+        };
+
+        match mutation_type {
+            0 => {
+                // Simple swap
+                let a = rng.rand_range(0..52) as usize;
+                let b = rng.rand_range(0..52) as usize;
+                AdvancedMutation::Swap(a, b)
+            }
+            1 => {
+                // Block swap - swap two segments of cards
+                let len = rng.rand_range(2..8) as usize;
+                let start1 = rng.rand_range(0..(52 - len) as u32) as usize;
+                let start2 = rng.rand_range(0..(52 - len) as u32) as usize;
+                AdvancedMutation::BlockSwap(start1, start2, len)
+            }
+            2 => {
+                // Reversal - reverse a segment
+                let a = rng.rand_range(0..52) as usize;
+                let b = rng.rand_range(0..52) as usize;
+                let start = a.min(b);
+                let end = a.max(b);
+                AdvancedMutation::Reversal(start, end)
+            }
+            3 => {
+                // Rotation - cut the deck
+                let pos = rng.rand_range(1..52) as usize;
+                AdvancedMutation::Rotation(pos)
+            }
+            _ => {
+                // Scramble - shuffle a segment
+                let a = rng.rand_range(0..52) as usize;
+                let b = rng.rand_range(0..52) as usize;
+                let start = a.min(b);
+                let end = a.max(b).min(start + 10); // Limit scramble size
+                AdvancedMutation::Scramble(start, end)
+            }
+        }
+    }
+
+    pub fn apply(self, mut deck: Deck, rng: &mut Rand32) -> Deck {
+        match self {
+            AdvancedMutation::Swap(i, j) => {
+                deck.0.swap(i, j);
+                deck
+            }
+            AdvancedMutation::BlockSwap(start1, start2, len) => {
+                if start1 + len > 52 || start2 + len > 52 || start1 == start2 {
+                    return deck; // Invalid, return unchanged
+                }
+                // Swap blocks by using a temporary buffer
+                for i in 0..len {
+                    deck.0.swap(start1 + i, start2 + i);
+                }
+                deck
+            }
+            AdvancedMutation::Reversal(start, end) => {
+                if start < end && end <= 52 {
+                    deck.0[start..end].reverse();
+                }
+                deck
+            }
+            AdvancedMutation::Rotation(pos) => deck.cut(pos),
+            AdvancedMutation::Scramble(start, end) => {
+                if start < end && end <= 52 {
+                    // Fisher-Yates shuffle on the segment
+                    for i in start..end {
+                        let j = rng.rand_range(i as u32..end as u32) as usize;
+                        deck.0.swap(i, j);
+                    }
+                }
+                deck
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use proptest::prelude::*;
+    #[test]
+    fn cut_0_does_nothing() {
+        let start = Deck::new_deck_order();
+        let c = start.clone().cut(0);
+        assert_eq!(start, c);
+    }
+
+    proptest! {
+        #[test]
+        fn test_cut_twice_roundtrip(cut_pos in 0usize..52) {
+            let deck = Deck::new_deck_order();
+            let d1 = deck.clone().cut(cut_pos);
+            let d2 = d1.cut(52 - cut_pos);
+            assert_eq!(deck, d2);
+
+        }
     }
 }
