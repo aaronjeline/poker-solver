@@ -2,10 +2,28 @@ use crate::deck::*;
 use crate::hands::*;
 use crate::precompute::*;
 
-pub const MAX_WINS: usize = 52;
+const MAX_WINS: usize = 52;
 
-pub fn num_wins(num_players: usize, deck: &Deck, table: &ScoreTable) -> usize {
+pub fn max_wins(real: bool) -> usize {
+    if real { 52 - 10 } else { 52 }
+}
+
+pub fn num_wins(num_players: usize, deck: &Deck, table: &ScoreTable, real: bool) -> usize {
+    if !real {
+        num_wins_total(num_players, deck, table)
+    } else {
+        num_realistic_wins(num_players, deck, table)
+    }
+}
+
+pub fn num_wins_total(num_players: usize, deck: &Deck, table: &ScoreTable) -> usize {
     (0..52)
+        .filter(|cut_pos| dealer_wins_game(num_players, deck.clone().cut(*cut_pos), table))
+        .count()
+}
+
+pub fn num_realistic_wins(num_players: usize, deck: &Deck, table: &ScoreTable) -> usize {
+    (5..47)
         .filter(|cut_pos| dealer_wins_game(num_players, deck.clone().cut(*cut_pos), table))
         .count()
 }

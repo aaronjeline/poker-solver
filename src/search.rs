@@ -4,6 +4,8 @@ use crate::precompute::*;
 
 pub type SearchFn = &'static fn(usize, ScoreTable) -> Deck;
 
+pub const REAL: bool = false;
+
 pub fn run_random_search(num_players: usize) -> std::io::Result<()> {
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!("  Loading precomputed hand scores...");
@@ -48,10 +50,10 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
 
     let mut rng = oorandom::Rand32::new(4);
     let mut best_ever_deck = Deck::new_deck_order().shuffle(&mut rng);
-    let mut best_ever_score = num_wins(num_players, &best_ever_deck, &table);
+    let mut best_ever_score = num_wins(num_players, &best_ever_deck, &table, REAL);
 
     eprintln!("  🏔️  Starting hill climbing search...");
-    eprintln!("  📊 Initial score: {}/{}", best_ever_score, MAX_WINS);
+    eprintln!("  📊 Initial score: {}/{}", best_ever_score, max_wins(REAL));
     eprintln!();
 
     for restart in 0..MAX_RESTARTS {
@@ -61,7 +63,7 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
             // Random restart but keep best ever
             Deck::new_deck_order().shuffle(&mut rng)
         };
-        let mut current_score = num_wins(num_players, &deck, &table);
+        let mut current_score = num_wins(num_players, &deck, &table, REAL);
 
         let mut iterations_stuck = 0;
         let mut iteration = 0;
@@ -81,7 +83,7 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
 
                 // Try the swap
                 deck.0.swap(i, j);
-                let new_score = num_wins(num_players, &deck, &table);
+                let new_score = num_wins(num_players, &deck, &table, REAL);
 
                 if new_score > current_score {
                     // Accept improvement
@@ -97,12 +99,12 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
                             restart + 1,
                             MAX_RESTARTS,
                             best_ever_score,
-                            MAX_WINS,
+                            max_wins(REAL),
                             iteration
                         );
                     }
 
-                    if current_score == MAX_WINS {
+                    if current_score == max_wins(REAL) {
                         eprintln!();
                         eprintln!("  ✓ Perfect deck found!");
                         return deck;
@@ -125,7 +127,7 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
                             restart + 1,
                             MAX_RESTARTS,
                             best_ever_score,
-                            MAX_WINS
+                            max_wins(REAL)
                         );
                     }
                     break; // Move to next restart
@@ -137,7 +139,8 @@ pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
     eprintln!();
     eprintln!(
         "  ⚠️  Max restarts reached. Best found: {}/{}",
-        best_ever_score, MAX_WINS
+        best_ever_score,
+        max_wins(REAL)
     );
     best_ever_deck
 }
@@ -159,7 +162,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
     let mut scored_population: Vec<(Deck, usize)> = Vec::with_capacity(POP_SIZE);
     for _ in 0..POP_SIZE {
         let deck = start.clone().shuffle(&mut rng);
-        let score = num_wins(num_players, &deck, &table);
+        let score = num_wins(num_players, &deck, &table, REAL);
         scored_population.push((deck, score));
     }
 
@@ -169,7 +172,11 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
         .max()
         .unwrap();
     eprintln!("  ✓ Initial population created");
-    eprintln!("  📊 Initial best score: {}/{}", initial_best, MAX_WINS);
+    eprintln!(
+        "  📊 Initial best score: {}/{}",
+        initial_best,
+        max_wins(REAL)
+    );
     eprintln!();
 
     let mut generation = 0;
@@ -203,7 +210,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
             let j = rng.rand_range(0..population.len() as u32) as usize;
             if i != j {
                 let child = Deck::crossover(&population[i], &population[j], &mut rng);
-                let score = num_wins(num_players, &child, &table);
+                let score = num_wins(num_players, &child, &table, REAL);
                 new_generation.push((child, score));
             }
         }
@@ -216,7 +223,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
             for mutation in muts {
                 child = mutation.apply(child, &mut rng);
             }
-            let score = num_wins(num_players, &child, &table);
+            let score = num_wins(num_players, &child, &table, REAL);
             new_generation.push((child, score));
         }
 
@@ -239,7 +246,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
                 "\r  ⚡ Generation {}: Best score {}/{} (pop: {}, mut: {:.2})",
                 generation,
                 best_score,
-                MAX_WINS,
+                max_wins(REAL),
                 new_generation.len(),
                 mutation_rate
             );
@@ -251,7 +258,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
                     "\r  🔄 Generation {}: Best score {}/{} (pop: {}, mut: {:.2}, stale: {})",
                     generation,
                     best_score,
-                    MAX_WINS,
+                    max_wins(REAL),
                     new_generation.len(),
                     mutation_rate,
                     generations_without_improvement
@@ -259,7 +266,7 @@ pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {
             }
         }
 
-        if current_best_score == MAX_WINS {
+        if current_best_score == max_wins(REAL) {
             eprintln!();
             eprintln!("  ✓ Perfect deck found after {} generations!", generation);
             return new_generation[0].0.clone();
@@ -278,15 +285,15 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
     const MAX_ITERATIONS: usize = 100_000_000;
     const INITIAL_TEMP: f32 = 10.0;
     const COOLING_RATE: f32 = 0.9999; // Slower cooling = more exploration
-    const RESTART_INTERVAL: usize = 50_000; // Restart after this many iterations without improvement
+    const RESTART_INTERVAL: usize = 1000_000; // Restart after this many iterations without improvement
     const MIN_TEMP: f32 = 0.01; // Restart if temperature gets too low
 
     let mut rng = oorandom::Rand32::new(4);
     let mut best_deck = Deck::new_deck_order().shuffle(&mut rng);
-    let mut best_score = num_wins(num_players, &best_deck, &table);
+    let mut best_score = num_wins(num_players, &best_deck, &table, REAL);
 
-    eprintln!("  🔥 Starting simulated annealing with random restarts...");
-    eprintln!("  📊 Initial score: {}/{}", best_score, MAX_WINS);
+    eprintln!("   Starting simulated annealing with random restarts...");
+    eprintln!("   Initial score: {}/{}", best_score, max_wins(REAL));
     eprintln!();
 
     let mut total_iterations = 0;
@@ -304,7 +311,7 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
             // Random restart from new position
             Deck::new_deck_order().shuffle(&mut rng)
         };
-        let mut current_score = num_wins(num_players, &current_deck, &table);
+        let mut current_score = num_wins(num_players, &current_deck, &table, REAL);
         let mut temperature = INITIAL_TEMP;
         let mut iterations_without_improvement = 0;
 
@@ -317,7 +324,7 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
                 .next()
                 .unwrap();
             let new_deck = mutation.apply(current_deck.clone(), &mut rng);
-            let new_score = num_wins(num_players, &new_deck, &table);
+            let new_score = num_wins(num_players, &new_deck, &table, REAL);
 
             // Calculate acceptance probability
             let accept = if new_score > current_score {
@@ -341,10 +348,14 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
                     iterations_without_improvement = 0;
                     eprint!(
                         "\r  ⚡ Restart {}, Iter {}: Best score {}/{} (temp: {:.4})",
-                        restart_count, total_iterations, best_score, MAX_WINS, temperature
+                        restart_count,
+                        total_iterations,
+                        best_score,
+                        max_wins(REAL),
+                        temperature
                     );
 
-                    if best_score == MAX_WINS {
+                    if best_score == max_wins(REAL) {
                         eprintln!();
                         eprintln!("  ✓ Perfect deck found!");
                         return best_deck;
@@ -363,7 +374,12 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
             if total_iterations % 10000 == 0 {
                 eprint!(
                     "\r  🔄 Restart {}, Iter {}: Best {}/{} (current: {}, temp: {:.4})",
-                    restart_count, total_iterations, best_score, MAX_WINS, current_score, temperature
+                    restart_count,
+                    total_iterations,
+                    best_score,
+                    max_wins(REAL),
+                    current_score,
+                    temperature
                 );
             }
 
@@ -371,7 +387,11 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
             if iterations_without_improvement >= RESTART_INTERVAL || temperature < MIN_TEMP {
                 eprint!(
                     "\r  🔄 Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4})      ",
-                    restart_count, best_score, MAX_WINS, iterations_without_improvement, temperature
+                    restart_count,
+                    best_score,
+                    max_wins(REAL),
+                    iterations_without_improvement,
+                    temperature
                 );
                 eprintln!();
                 break; // Trigger restart
@@ -382,9 +402,114 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
     eprintln!();
     eprintln!(
         "  ⚠️  Max iterations reached after {} restarts. Best found: {}/{}",
-        restart_count, best_score, MAX_WINS
+        restart_count,
+        best_score,
+        max_wins(REAL)
     );
     best_deck
+}
+
+pub fn analyze_difficulty(num_players: usize, table: ScoreTable, samples: usize) {
+    let start = Deck::new_deck_order();
+    let mut rng = oorandom::Rand32::new(4);
+
+    let mut scores: Vec<usize> = Vec::new();
+    let mut max_seen = 0;
+
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!("  Analyzing problem difficulty ({} players)", num_players);
+    eprintln!("  Sampling {} random decks...", samples);
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!();
+
+    for i in 0..samples {
+        let deck = start.clone().shuffle(&mut rng);
+        let score = num_wins(num_players, &deck, &table, REAL);
+        scores.push(score);
+
+        if score > max_seen {
+            max_seen = score;
+            eprint!(
+                "\r  New best: {}/{} (sample {}/{})",
+                max_seen,
+                max_wins(REAL),
+                i + 1,
+                samples
+            );
+        } else if i % 100 == 0 {
+            eprint!(
+                "\r  Progress: {}/{} samples (best: {}/{})",
+                i + 1,
+                samples,
+                max_seen,
+                max_wins(REAL)
+            );
+        }
+    }
+
+    eprintln!();
+    eprintln!();
+
+    // Calculate statistics
+    scores.sort();
+    let min = scores[0];
+    let max = scores[scores.len() - 1];
+    let median = scores[scores.len() / 2];
+    let mean: f64 = scores.iter().sum::<usize>() as f64 / scores.len() as f64;
+
+    // Count how many hit certain thresholds
+    let perfect = scores.iter().filter(|&&s| s == max_wins(REAL)).count();
+    let near_perfect = scores.iter().filter(|&&s| s >= 50).count();
+    let good = scores.iter().filter(|&&s| s >= 45).count();
+    let decent = scores.iter().filter(|&&s| s >= 40).count();
+
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!("  STATISTICS");
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!("  Min score:        {}/{}", min, max_wins(REAL));
+    eprintln!("  Max score:        {}/{}", max, max_wins(REAL));
+    eprintln!("  Median score:     {}/{}", median, max_wins(REAL));
+    eprintln!("  Mean score:       {:.1}/{}", mean, max_wins(REAL));
+    eprintln!();
+    eprintln!(
+        "  Perfect (52/52):  {} ({:.2}%)",
+        perfect,
+        perfect as f64 / samples as f64 * 100.0
+    );
+    eprintln!(
+        "  ≥50/52:           {} ({:.2}%)",
+        near_perfect,
+        near_perfect as f64 / samples as f64 * 100.0
+    );
+    eprintln!(
+        "  ≥45/52:           {} ({:.2}%)",
+        good,
+        good as f64 / samples as f64 * 100.0
+    );
+    eprintln!(
+        "  ≥40/52:           {} ({:.2}%)",
+        decent,
+        decent as f64 / samples as f64 * 100.0
+    );
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!();
+
+    // Distribution by score
+    eprintln!("  SCORE DISTRIBUTION");
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let mut histogram = vec![0; max_wins(REAL) + 1];
+    for &score in &scores {
+        histogram[score] += 1;
+    }
+
+    for (score, &count) in histogram.iter().enumerate() {
+        if count > 0 {
+            let bar_len = (count as f64 / samples as f64 * 50.0) as usize;
+            let bar = "█".repeat(bar_len);
+            eprintln!("  {:2}/52: {:4} {}", score, count, bar);
+        }
+    }
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
 pub fn random_search_for_deck(num_players: usize, table: ScoreTable) -> Deck {
@@ -396,17 +521,19 @@ pub fn random_search_for_deck(num_players: usize, table: ScoreTable) -> Deck {
     loop {
         iterations += 1;
         let shuffled = start.clone().shuffle(&mut random);
-        let score = num_wins(num_players, &shuffled, &table);
+        let score = num_wins(num_players, &shuffled, &table, REAL);
 
         if score > best_score {
             best_score = score;
             eprint!(
                 "\r  ⚡ Iteration {}: Found deck with score {}/{}",
-                iterations, score, MAX_WINS
+                iterations,
+                score,
+                max_wins(REAL)
             );
         }
 
-        if score == MAX_WINS {
+        if score == max_wins(REAL) {
             eprintln!();
             eprintln!("  ✓ Perfect deck found after {} iterations!", iterations);
             return shuffled;
