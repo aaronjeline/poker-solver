@@ -278,76 +278,111 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
     const MAX_ITERATIONS: usize = 100_000_000;
     const INITIAL_TEMP: f32 = 10.0;
     const COOLING_RATE: f32 = 0.9999; // Slower cooling = more exploration
+    const RESTART_INTERVAL: usize = 50_000; // Restart after this many iterations without improvement
+    const MIN_TEMP: f32 = 0.01; // Restart if temperature gets too low
 
     let mut rng = oorandom::Rand32::new(4);
-    let mut current_deck = Deck::new_deck_order().shuffle(&mut rng);
-    let mut current_score = num_wins(num_players, &current_deck, &table);
-    let mut best_deck = current_deck.clone();
-    let mut best_score = current_score;
+    let mut best_deck = Deck::new_deck_order().shuffle(&mut rng);
+    let mut best_score = num_wins(num_players, &best_deck, &table);
 
-    let mut temperature = INITIAL_TEMP;
-
-    eprintln!("  🔥 Starting simulated annealing...");
-    eprintln!("  📊 Initial score: {}/{}", current_score, MAX_WINS);
+    eprintln!("  🔥 Starting simulated annealing with random restarts...");
+    eprintln!("  📊 Initial score: {}/{}", best_score, MAX_WINS);
     eprintln!();
 
-    for iteration in 0..MAX_ITERATIONS {
-        // Try a random modification using advanced mutations
-        let mutation = generate_adaptive_mutations(&mut rng, 0.2)
-            .into_iter()
-            .next()
-            .unwrap();
-        let new_deck = mutation.apply(current_deck.clone(), &mut rng);
-        let new_score = num_wins(num_players, &new_deck, &table);
+    let mut total_iterations = 0;
+    let mut restart_count = 0;
 
-        // Calculate acceptance probability
-        let accept = if new_score > current_score {
-            // Always accept improvements
-            true
-        } else {
-            // Accept worse solutions with probability based on temperature
-            let delta = (new_score as f32) - (current_score as f32);
-            let probability = (delta / temperature).exp();
-            let random_val = rng.rand_float();
-            random_val < probability
-        };
-
-        if accept {
-            current_deck = new_deck;
-            current_score = new_score;
-
-            if current_score > best_score {
-                best_score = current_score;
-                best_deck = current_deck.clone();
-                eprint!(
-                    "\r  ⚡ Iteration {}: Best score {}/{} (temp: {:.4})",
-                    iteration, best_score, MAX_WINS, temperature
-                );
-
-                if best_score == MAX_WINS {
-                    eprintln!();
-                    eprintln!("  ✓ Perfect deck found!");
-                    return best_deck;
-                }
-            }
+    loop {
+        if total_iterations >= MAX_ITERATIONS {
+            break;
         }
 
-        // Cool down
-        temperature *= COOLING_RATE;
+        restart_count += 1;
+        let mut current_deck = if restart_count == 1 {
+            best_deck.clone()
+        } else {
+            // Random restart from new position
+            Deck::new_deck_order().shuffle(&mut rng)
+        };
+        let mut current_score = num_wins(num_players, &current_deck, &table);
+        let mut temperature = INITIAL_TEMP;
+        let mut iterations_without_improvement = 0;
 
-        // Progress update
-        if iteration % 1000 == 0 && iteration > 0 {
-            eprint!(
-                "\r  🔄 Iteration {}: Best {}/{} (current: {}, temp: {:.4})",
-                iteration, best_score, MAX_WINS, current_score, temperature
-            );
+        while total_iterations < MAX_ITERATIONS {
+            total_iterations += 1;
+
+            // Try a random modification using advanced mutations
+            let mutation = generate_adaptive_mutations(&mut rng, 0.2)
+                .into_iter()
+                .next()
+                .unwrap();
+            let new_deck = mutation.apply(current_deck.clone(), &mut rng);
+            let new_score = num_wins(num_players, &new_deck, &table);
+
+            // Calculate acceptance probability
+            let accept = if new_score > current_score {
+                // Always accept improvements
+                true
+            } else {
+                // Accept worse solutions with probability based on temperature
+                let delta = (new_score as f32) - (current_score as f32);
+                let probability = (delta / temperature).exp();
+                let random_val = rng.rand_float();
+                random_val < probability
+            };
+
+            if accept {
+                current_deck = new_deck;
+                current_score = new_score;
+
+                if current_score > best_score {
+                    best_score = current_score;
+                    best_deck = current_deck.clone();
+                    iterations_without_improvement = 0;
+                    eprint!(
+                        "\r  ⚡ Restart {}, Iter {}: Best score {}/{} (temp: {:.4})",
+                        restart_count, total_iterations, best_score, MAX_WINS, temperature
+                    );
+
+                    if best_score == MAX_WINS {
+                        eprintln!();
+                        eprintln!("  ✓ Perfect deck found!");
+                        return best_deck;
+                    }
+                } else {
+                    iterations_without_improvement += 1;
+                }
+            } else {
+                iterations_without_improvement += 1;
+            }
+
+            // Cool down
+            temperature *= COOLING_RATE;
+
+            // Progress update
+            if total_iterations % 10000 == 0 {
+                eprint!(
+                    "\r  🔄 Restart {}, Iter {}: Best {}/{} (current: {}, temp: {:.4})",
+                    restart_count, total_iterations, best_score, MAX_WINS, current_score, temperature
+                );
+            }
+
+            // Check for restart conditions
+            if iterations_without_improvement >= RESTART_INTERVAL || temperature < MIN_TEMP {
+                eprint!(
+                    "\r  🔄 Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4})      ",
+                    restart_count, best_score, MAX_WINS, iterations_without_improvement, temperature
+                );
+                eprintln!();
+                break; // Trigger restart
+            }
         }
     }
 
     eprintln!();
     eprintln!(
-        "  ⚠️  Max iterations reached. Best found: {}/{}",
-        best_score, MAX_WINS
+        "  ⚠️  Max iterations reached after {} restarts. Best found: {}/{}",
+        restart_count, best_score, MAX_WINS
     );
     best_deck
 }
