@@ -285,14 +285,14 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
     const MAX_ITERATIONS: usize = 100_000_000;
     const INITIAL_TEMP: f32 = 10.0;
     const COOLING_RATE: f32 = 0.9999; // Slower cooling = more exploration
-    const RESTART_INTERVAL: usize = 1000_000; // Restart after this many iterations without improvement
+    const BASE_RESTART_INTERVAL: usize = 50_000; // Base restart interval
     const MIN_TEMP: f32 = 0.01; // Restart if temperature gets too low
 
     let mut rng = oorandom::Rand32::new(4);
     let mut best_deck = Deck::new_deck_order().shuffle(&mut rng);
     let mut best_score = num_wins(num_players, &best_deck, &table, REAL);
 
-    eprintln!("   Starting simulated annealing with random restarts...");
+    eprintln!("   Starting simulated annealing with adaptive restarts...");
     eprintln!("   Initial score: {}/{}", best_score, max_wins(REAL));
     eprintln!();
 
@@ -305,6 +305,11 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
         }
 
         restart_count += 1;
+
+        // Adaptive restart interval: increases with more restarts
+        // Early restarts are quick, later ones get more patient
+        let restart_interval = BASE_RESTART_INTERVAL * (1 + restart_count / 10);
+
         let mut current_deck = if restart_count == 1 {
             best_deck.clone()
         } else {
@@ -384,14 +389,15 @@ pub fn simulated_annealing(num_players: usize, table: ScoreTable) -> Deck {
             }
 
             // Check for restart conditions
-            if iterations_without_improvement >= RESTART_INTERVAL || temperature < MIN_TEMP {
+            if iterations_without_improvement >= restart_interval || temperature < MIN_TEMP {
                 eprint!(
-                    "\r  🔄 Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4})      ",
+                    "\r  🔄 Restart {}: Best {}/{} - Restarting (stuck: {}, temp: {:.4}, interval: {})      ",
                     restart_count,
                     best_score,
                     max_wins(REAL),
                     iterations_without_improvement,
-                    temperature
+                    temperature,
+                    restart_interval
                 );
                 eprintln!();
                 break; // Trigger restart
