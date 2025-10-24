@@ -121,6 +121,14 @@ impl Ord for TableEntry {
     }
 }
 
+impl TableEntry {
+    /// Convert TableEntry to a numeric score for margin calculations
+    /// Preserves the ordering: higher rank = higher score, hi is tiebreaker
+    pub fn to_score(&self) -> i32 {
+        (self.rank as i32) * 256 + (self.hi as i32)
+    }
+}
+
 impl Entry {
     pub const fn size() -> usize {
         HAND_SIZE + 2

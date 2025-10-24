@@ -32,6 +32,62 @@ pub fn dealer_wins_game(num_players: usize, deck: Deck, table: &ScoreTable) -> b
     deal_a_round(num_players, deck).dealer_wins(table)
 }
 
+/// Hybrid scoring function that combines win count with margin of victory
+/// Returns: (num_wins * WIN_WEIGHT) + total_margin
+/// This provides a smooth gradient for optimization while prioritizing wins
+pub fn hybrid_score(num_players: usize, deck: &Deck, table: &ScoreTable, real: bool) -> f64 {
+    const WIN_WEIGHT: f64 = 100_000.0; // One win is worth 100k points
+
+    let positions: Vec<usize> = if real {
+        (5..47).collect()
+    } else {
+        (0..52).collect()
+    };
+
+    let mut num_wins = 0;
+    let mut total_margin = 0.0;
+
+    for cut_pos in positions {
+        let cut_deck = deck.clone().cut(cut_pos);
+        let game = deal_a_round(num_players, cut_deck);
+
+        // Get player 0's score
+        let p0_score = game.players_score(0, table);
+
+        // Get best opponent's score
+        let best_opponent_score = (1..num_players)
+            .map(|idx| game.players_score(idx, table))
+            .max()
+            .unwrap();
+
+        // Calculate margin (positive if player 0 wins)
+        let margin = p0_score.to_score() - best_opponent_score.to_score();
+
+        if margin > 0 {
+            num_wins += 1;
+        }
+
+        total_margin += margin as f64;
+    }
+
+    // Hybrid score: heavily weight wins, but use margins as tiebreaker/gradient
+    (num_wins as f64) * WIN_WEIGHT + total_margin
+}
+
+/// Get just the margin component for a single cut position
+pub fn position_margin(num_players: usize, deck: &Deck, cut_pos: usize, table: &ScoreTable) -> i32 {
+    let cut_deck = deck.clone().cut(cut_pos);
+    let game = deal_a_round(num_players, cut_deck);
+
+    let p0_score = game.players_score(0, table);
+    let best_opponent_score = (1..num_players)
+        .map(|idx| game.players_score(idx, table))
+        .max()
+        .unwrap();
+
+    p0_score.to_score() - best_opponent_score.to_score()
+}
+
 struct Game {
     players: Vec<Player>,
     common: Common,
@@ -49,7 +105,7 @@ impl Game {
         winner
     }
 
-    fn players_score(&self, idx: usize, table: &ScoreTable) -> TableEntry {
+    pub fn players_score(&self, idx: usize, table: &ScoreTable) -> TableEntry {
         let p = &self.players[idx];
         // Generate all C(5,3) = 10 combinations of 3 cards from common
         let mut hands: Vec<Hand> = Vec::with_capacity(10);

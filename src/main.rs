@@ -25,6 +25,9 @@ enum Commands {
         /// Number of players (including dealer)
         #[arg(short, long, default_value = "2")]
         num_players: usize,
+        /// Search algorithm to use: genetic, island, beam, aco, simulated-annealing
+        #[arg(short, long, default_value = "genetic")]
+        algorithm: String,
     },
     /// Analyze problem difficulty for given player count
     Analyze {
@@ -44,8 +47,19 @@ fn main() -> io::Result<()> {
         Commands::Precompute => {
             precompute::precompute(stdout())?;
         }
-        Commands::Search { num_players } => {
-            search::run_random_search(num_players)?;
+        Commands::Search { num_players, algorithm } => {
+            let search_fn: search::SearchFn = match algorithm.as_str() {
+                "genetic" => search::genetic_search,
+                "island" => search::island_genetic_search,
+                "beam" => search::beam_search,
+                "aco" => search::ant_colony_search,
+                "simulated-annealing" => search::simulated_annealing,
+                _ => {
+                    eprintln!("Unknown algorithm '{}'. Using genetic search.", algorithm);
+                    search::genetic_search
+                }
+            };
+            search::run_search(num_players, search_fn)?;
         }
         Commands::Analyze { num_players, samples } => {
             let f = std::fs::File::open("hands")?;
