@@ -1,10 +1,10 @@
 use crate::cards::Card;
 use crate::hands::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::{Read, Write};
 
-pub struct ScoreTable(HashMap<Hand, TableEntry>);
+pub struct ScoreTable(FxHashMap<Hand, TableEntry>);
 
 impl ScoreTable {
     pub fn score(&self, hand: &Hand) -> TableEntry {
@@ -13,7 +13,7 @@ impl ScoreTable {
 }
 
 pub fn load_table(mut file: impl Read) -> std::io::Result<ScoreTable> {
-    let mut table = HashMap::with_capacity(ALL_HANDS);
+    let mut table = FxHashMap::with_capacity_and_hasher(ALL_HANDS, Default::default());
     let mut v = Vec::with_capacity(buffer_size());
     file.read_to_end(&mut v)?;
     let mut bs = Bytes::from_owner(v);
