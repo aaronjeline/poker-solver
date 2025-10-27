@@ -143,8 +143,14 @@ pub fn deal_a_round(num_players: usize, mut deck: Deck) -> Game {
             players[p].0[hand_idx] = card;
         }
     }
-    for i in 0..5 {
-        common.0[i] = deck.draw();
-    }
+    let _burn = deck.draw();
+    common.0[0] = deck.draw();
+    common.0[1] = deck.draw();
+    common.0[2] = deck.draw();
+    let _burn = deck.draw();
+    common.0[3] = deck.draw();
+    let _burn = deck.draw();
+    common.0[4] = deck.draw();
+
     Game { players, common }
 }
