@@ -47,7 +47,21 @@ impl Hand {
         values.sort_unstable();
 
         // Find high card (last after sorting)
-        let high_card = values[4];
+        // Special case: Ace (value 1) should be treated as 14 (highest) for high card
+        let high_card = if values[0] == 1 {
+            // If we have an Ace, it's the high card (treat as 14)
+            // unless we have a 5-high straight (A-2-3-4-5)
+            if values == [1, 2, 3, 4, 5] {
+                // 5-high straight, high card is 5
+                5
+            } else {
+                // Ace is high
+                14
+            }
+        } else {
+            // No Ace, high card is last element
+            values[4]
+        };
 
         // Check for flush (all same suit)
         let is_flush = suits.iter().all(|&s| s == suits[0]);
@@ -389,6 +403,6 @@ mod tests {
         ]);
         let entry = hand.score();
         assert_eq!(entry.rank, 9); // Straight flush (royal flush is the highest straight flush)
-        assert_eq!(entry.hi, 13);
+        assert_eq!(entry.hi, 14); // Ace high (14)
     }
 }
