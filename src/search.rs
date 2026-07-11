@@ -65,7 +65,7 @@ fn select_parent(population: &[(Deck, usize)], rng: &mut oorandom::Rand32) -> us
 /// Perform local search using simulated annealing with hybrid scoring
 /// Uses hybrid_score (wins * 100k + margins) internally for smooth gradient
 /// Returns (optimized_deck, final_win_count)
-fn local_search_sa(
+pub fn local_search_sa(
     starting_deck: Deck,
     num_players: usize,
     table: &ScoreTable,
@@ -163,105 +163,86 @@ pub fn run_search(num_players: usize, search: SearchFn) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Steepest-ascent hill climbing with random restarts.
+///
+/// 1. Pick a random deck.
+/// 2. If it wins every game (max_wins), we're done.
+/// 3. Try every pair of swaps, keeping the one that wins the most games.
+/// 4. If no swap increases the score, we're on a hill with no steps up: restart from (1).
 pub fn hill_climbing(num_players: usize, table: ScoreTable) -> Deck {
-    const MAX_SAMPLES: usize = 500; // Limit swaps to test per iteration
-    const MAX_RESTARTS: usize = 100; // Maximum random restarts
-
     let mut rng = oorandom::Rand32::new(4);
-    let mut best_ever_deck = Deck::new_deck_order().shuffle(&mut rng);
-    let mut best_ever_score = num_wins(num_players, &best_ever_deck, &table, REAL);
+
+    let mut best_ever_score = 0;
 
     eprintln!("  🏔️  Starting hill climbing search...");
-    eprintln!("  📊 Initial score: {}/{}", best_ever_score, max_wins(REAL));
     eprintln!();
 
-    for restart in 0..MAX_RESTARTS {
-        let mut deck = if restart == 0 {
-            best_ever_deck.clone()
-        } else {
-            // Random restart but keep best ever
-            Deck::new_deck_order().shuffle(&mut rng)
-        };
+    let mut restart = 0;
+    loop {
+        restart += 1;
+
+        // 1. Pick a random deck.
+        let mut deck = Deck::new_deck_order().shuffle(&mut rng);
         let mut current_score = num_wins(num_players, &deck, &table, REAL);
 
-        let mut iterations_stuck = 0;
-        let mut iteration = 0;
-
         loop {
-            iteration += 1;
-            let mut improved = false;
+            // 2. If we win every game, we're done.
+            if current_score == max_wins(REAL) {
+                eprintln!();
+                eprintln!("  ✓ Perfect deck found on restart {}!", restart);
+                return deck;
+            }
 
-            // Try random swaps instead of exhaustive search
-            for _ in 0..MAX_SAMPLES {
-                let i = rng.rand_range(0..52) as usize;
-                let j = rng.rand_range(0..52) as usize;
+            // 3. Try every pair of swaps, keeping the one that wins the most games.
+            let mut best_swap: Option<(usize, usize)> = None;
+            let mut best_swap_score = current_score;
 
-                if i == j {
-                    continue;
-                }
-
-                // Try the swap
-                deck.0.swap(i, j);
-                let new_score = num_wins(num_players, &deck, &table, REAL);
-
-                if new_score > current_score {
-                    // Accept improvement
-                    current_score = new_score;
-                    improved = true;
-                    iterations_stuck = 0;
-
-                    if current_score > best_ever_score {
-                        best_ever_score = current_score;
-                        best_ever_deck = deck.clone();
-                        eprint!(
-                            "\r  ⚡ Restart {}/{}: Best score {}/{} (iter: {})",
-                            restart + 1,
-                            MAX_RESTARTS,
-                            best_ever_score,
-                            max_wins(REAL),
-                            iteration
-                        );
-                    }
-
-                    if current_score == max_wins(REAL) {
-                        eprintln!();
-                        eprintln!("  ✓ Perfect deck found!");
-                        return deck;
-                    }
-
-                    break; // Found improvement, try again
-                } else {
-                    // Reject, swap back
+            for i in 0..52 {
+                for j in (i + 1)..52 {
                     deck.0.swap(i, j);
+                    let new_score = num_wins(num_players, &deck, &table, REAL);
+                    deck.0.swap(i, j); // undo
+
+                    if new_score > best_swap_score {
+                        best_swap_score = new_score;
+                        best_swap = Some((i, j));
+                    }
                 }
             }
 
-            if !improved {
-                iterations_stuck += 1;
-                if iterations_stuck > 5 {
-                    // Local optimum reached, try random restart
-                    if restart % 10 == 0 {
-                        eprint!(
-                            "\r  🔄 Restart {}/{}: Best score {}/{} (stuck at local optimum)",
-                            restart + 1,
-                            MAX_RESTARTS,
-                            best_ever_score,
-                            max_wins(REAL)
-                        );
+            match best_swap {
+                Some((i, j)) => {
+                    // Take the best step up.
+                    deck.0.swap(i, j);
+                    current_score = best_swap_score;
+
+                    if current_score > best_ever_score {
+                        best_ever_score = current_score;
                     }
-                    break; // Move to next restart
+
+                    eprint!(
+                        "\r  ⚡ Restart {}: climbed to {}/{}          ",
+                        restart,
+                        current_score,
+                        max_wins(REAL)
+                    );
+                }
+                None => {
+                    // 4. No swap increases the score: local optimum reached.
+                    eprintln!();
+                    eprintln!(
+                        "  🛑 Restart {}: reached a hill with no steps up at {}/{} (best ever: {}/{}). Restarting...",
+                        restart,
+                        current_score,
+                        max_wins(REAL),
+                        best_ever_score,
+                        max_wins(REAL)
+                    );
+                    break; // goto 1
                 }
             }
         }
     }
-
-    eprintln!();
-    eprintln!(
-        "  ⚠️  Max restarts reached. Best found: {}/{}",
-        best_ever_score,
-        max_wins(REAL)
-    );
-    best_ever_deck
 }
 
 pub fn genetic_search(num_players: usize, table: ScoreTable) -> Deck {

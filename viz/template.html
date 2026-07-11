@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Hill Climbing Fails at Poker — A Fitness Landscape</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    /* chrome & ink (light) */
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --axis:        #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    /* per-n identity (blue / amber / red) */
+    --n2:          #2a78d6;
+    --n3:          #eda100;
+    --n4:          #e34948;
+    /* diverging sign: win/improve (blue) ↔ loss/worse (red), neutral gray */
+    --pos:         #2a78d6;
+    --pos-strong:  #104281;
+    --neg:         #d03b3b;
+    --neg-strong:  #7f1414;
+    --neutral:     #f0efec;
+    --neutral-ink: #b8b7b0;
+    --good:        #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page:      #0d0d0d;
+      --surface:   #1a1a19;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --grid:      #2c2c2a;
+      --axis:      #383835;
+      --border:    rgba(255,255,255,0.10);
+      --n2:        #3987e5;
+      --n3:        #c98500;
+      --n4:        #e66767;
+      --pos:       #3987e5;
+      --pos-strong:#9ec5f4;
+      --neg:       #e66767;
+      --neg-strong:#f4b8b8;
+      --neutral:   #383835;
+      --neutral-ink:#6a6a66;
+      --good:      #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --n2:#3987e5; --n3:#c98500; --n4:#e66767;
+    --pos:#3987e5; --pos-strong:#9ec5f4; --neg:#e66767; --neg-strong:#f4b8b8;
+    --neutral:#383835; --neutral-ink:#6a6a66; --good:#0ca30c;
+  }
+  :root[data-theme="light"] {
+    --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --n2:#2a78d6; --n3:#eda100; --n4:#e34948;
+    --pos:#2a78d6; --pos-strong:#104281; --neg:#d03b3b; --neg-strong:#7f1414;
+    --neutral:#f0efec; --neutral-ink:#b8b7b0; --good:#006300;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 120px; }
+
+  header.hero { padding: 64px 0 8px; }
+  .kicker { color: var(--n4); font-weight: 650; letter-spacing: .04em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: clamp(28px, 5vw, 44px); line-height: 1.1; margin: 12px 0 16px; letter-spacing: -0.02em; }
+  .lede { font-size: 19px; color: var(--ink-2); max-width: 62ch; }
+  h2 { font-size: 26px; letter-spacing: -0.01em; margin: 8px 0 6px; }
+  h2 .num { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 10px; font-weight: 650; }
+  section { margin-top: 72px; scroll-margin-top: 20px; }
+  p { max-width: 66ch; color: var(--ink-2); }
+  p strong { color: var(--ink); font-weight: 650; }
+  .takeaway {
+    border-left: 3px solid var(--n4);
+    padding: 4px 0 4px 18px; margin: 20px 0; color: var(--ink);
+    font-size: 17px;
+  }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .88em;
+    background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+
+  .figure { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 20px 18px 16px; margin: 22px 0; }
+  .figure figcaption { color: var(--muted); font-size: 13.5px; margin-top: 10px; }
+  svg { display: block; width: 100%; height: auto; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  /* controls */
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .seg button { appearance: none; border: 0; background: transparent; color: var(--ink-2);
+    padding: 7px 14px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { color: #fff; }
+  /* neutral (non-n) pressed state, e.g. the regime toggle — readable in both themes */
+  #op-regime button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+  .seg button.n2[aria-pressed="true"] { background: var(--n2); }
+  .seg button.n3[aria-pressed="true"] { background: var(--n3); color: #1a1a19; }
+  .seg button.n4[aria-pressed="true"] { background: var(--n4); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 13.5px; color: var(--ink-2); }
+  .legend .item { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; }
+  .swatch.line { height: 3px; border-radius: 2px; }
+
+  .theme-toggle { position: fixed; top: 14px; right: 14px; z-index: 20;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+    border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+
+  /* tooltip */
+  #tt { position: fixed; pointer-events: none; z-index: 50; background: var(--surface);
+    color: var(--ink); border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 10px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    opacity: 0; transition: opacity .08s; max-width: 260px; }
+  #tt .tt-h { font-weight: 700; margin-bottom: 3px; }
+  #tt .tt-r { color: var(--ink-2); display: flex; gap: 10px; justify-content: space-between; }
+  #tt b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  .stat-row { display: flex; flex-wrap: wrap; gap: 28px; margin: 18px 0 4px; }
+  .stat .v { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .stat .l { font-size: 13px; color: var(--muted); }
+
+  .meta-note { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .card-red { color: var(--n4); }
+  footer { margin-top: 80px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 20px; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle">◐ theme</button>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker">Combinatorial optimization · fitness landscapes</div>
+    <h1>Why hill climbing can't beat poker</h1>
+    <p class="lede">
+      The goal: order a 52-card deck so the dealer wins no matter where you cut it.
+      A hill climber comes within a card or two for 2 players — then falls apart at 3 and 4.
+      These charts show <em>why</em>: the search space is a field of short, isolated hills.
+    </p>
+  </header>
+
+  <section id="intro">
+    <p>
+      Here's the game. Take a fixed ordering of a standard 52-card deck. Someone
+      <strong>cuts</strong> it at one of 52 positions (rotating the deck), then a hand of
+      Texas Hold'em is dealt to <em>n</em> players. The dealer is player 0. A deck's
+      <strong>score</strong> is the number of the 52 cut positions at which the dealer wins.
+      A perfect deck scores <strong>52/52</strong>: the dealer wins from every cut.
+    </p>
+    <p>
+      <strong>Steepest-ascent hill climbing</strong> tries to find such a deck: start from a
+      random ordering, look at every deck reachable by swapping two cards
+      (there are <code>C(52,2) = 1326</code> of them), move to whichever swap wins the most
+      games, and repeat. When no single swap improves the score, you're on a hilltop —
+      a <strong>local optimum</strong> — and the climb restarts from scratch.
+    </p>
+    <p class="meta-note">
+      A note on method: the win/loss of every hand is looked up in a 1.2&nbsp;GB precomputed
+      table, so the search runs in Rust, not in your browser. This page just renders what the
+      Rust <code>viz</code> command measured over many climbs. All data is embedded below —
+      no network required.
+    </p>
+  </section>
+
+  <!-- 1. TRAJECTORIES -->
+  <section id="trajectories">
+    <h2><span class="num">01</span>Every climb stalls below the summit</h2>
+    <p>
+      Each line is one climb: it starts at a random deck (left) and steps uphill until it
+      gets stuck. For <strong>2 players</strong> the climbs push high, brushing 52. Add players
+      and the whole cloud sinks — at <strong>4 players</strong> climbs die out in the 30s,
+      nowhere near a perfect deck. Same algorithm, dramatically lower ceiling.
+    </p>
+    <div class="controls" id="traj-controls">
+      <div class="legend" id="traj-legend"></div>
+    </div>
+    <figure class="figure">
+      <div id="chart-traj"></div>
+      <figcaption>Score vs. climbing step. Click a player count in the legend to isolate it. Hover a line to trace one climb. The dashed line at 52 is a perfect deck.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 2. OPTIMA HISTOGRAM -->
+  <section id="optima">
+    <h2><span class="num">02</span>The ceiling drops, the gap widens</h2>
+    <p>
+      Where do the climbs land? These are the distributions of final scores — one row per
+      player count, sharing an axis. As <em>n</em> grows the whole distribution slides left and
+      the distance to the <strong>52</strong> target grows. The share of climbs that actually
+      reach a perfect deck falls to essentially zero.
+    </p>
+    <figure class="figure">
+      <div id="chart-optima"></div>
+      <figcaption>Distribution of local-optimum scores across all restarts, per player count. The marker at 52 is the target.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 3. NEIGHBOR PROFILE -->
+  <section id="neighbors">
+    <h2><span class="num">03</span>At the top, there is nowhere to go</h2>
+    <p>
+      What does being stuck actually look like? For any deck, its 1326 swap-neighbors split into
+      three groups: some score <span style="color:var(--pos);font-weight:650">better</span>,
+      some the <span style="color:var(--muted);font-weight:650">same</span>, some
+      <span style="color:var(--neg);font-weight:650">worse</span>. A random deck has hundreds of
+      uphill moves. A local optimum has, by definition, <strong>zero</strong> — every one of the
+      1326 swaps ties or loses ground. That's the trap.
+    </p>
+    <div class="controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="nbr-seg"></div>
+    </div>
+    <figure class="figure">
+      <div id="chart-nbr"></div>
+      <figcaption>Of the 1326 single-swap neighbors, how many go up, stay level, or go down — averaged over all random starts vs. all local optima.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 4. IMPROVING-NEIGHBOR COLLAPSE -->
+  <section id="collapse">
+    <h2><span class="num">04</span>Uphill moves vanish as you climb</h2>
+    <p>
+      This is the mechanism behind the stall. As a climb's score rises (x-axis), the number of
+      swaps that still improve it (y-axis) collapses toward zero. The higher the score, the rarer
+      an uphill move — and for more players the supply of improving moves runs out
+      <em>sooner and lower</em>, which is exactly why those climbs freeze in the 30s.
+    </p>
+    <div class="controls" id="collapse-controls">
+      <div class="legend" id="collapse-legend"></div>
+    </div>
+    <figure class="figure">
+      <div id="chart-collapse"></div>
+      <figcaption>Mean number of strictly-improving neighbors (out of 1326) at each score reached during climbing. Hover for exact counts.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 5. DECK INSPECTOR -->
+  <section id="inspector">
+    <h2><span class="num">05</span>The cuts it can't fix</h2>
+    <p>
+      Finally, a look at real decks. Each strip is 52 cells, one per cut position:
+      <span style="color:var(--pos);font-weight:650">blue</span> where the dealer wins that cut,
+      <span style="color:var(--neg);font-weight:650">red</span> where they lose (darker = bigger
+      margin). A perfect deck would be all blue. The best deck the climber found still carries
+      red cells — losing cuts that no single swap can repair without breaking a winning one.
+    </p>
+    <div class="controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="insp-seg"></div>
+    </div>
+    <figure class="figure">
+      <div id="chart-insp"></div>
+      <figcaption>Per-cut dealer margin for a representative local optimum and the best deck found, at the selected player count. Hover a cell for details.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 6. TOPOLOGY: RIDGE WALK -->
+  <section id="topology">
+    <h2><span class="num">06</span>A landscape of countless peaks</h2>
+    <p>
+      So how <em>many</em> hills are there — and are they connected? Two facts settle it.
+      First, across all these climbs, no two ever ended on the same deck: every restart
+      discovers a <strong>brand-new</strong> summit, and those summits sit almost as far apart as
+      two decks possibly can.
+    </p>
+    <p>
+      Second, are those summits joined by high ground or split by valleys? To find out we take ten
+      of the summits the climbs found and <strong>walk a straight line between them</strong> through
+      deck space — morphing one optimum into the next a single swap at a time, and measuring the
+      score at every step. <em>This is a probe, not the search:</em> the climber itself stops dead at
+      each summit and restarts from a fresh random deck — here we deliberately keep walking to
+      see what lies <em>between</em> the peaks. The answer is the cross-section below. Between every
+      pair of summits the score <strong>plunges into a deep valley</strong> — there is no ridgeline
+      linking them. Each peak is an island.
+    </p>
+    <div class="controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="topo-seg"></div>
+    </div>
+    <div class="stat-row" id="topo-stats"></div>
+    <figure class="figure">
+      <div id="chart-ridge"></div>
+      <figcaption>A <em>constructed</em> cross-section of deck space — not the search itself. We morph one local optimum into the next, one swap at a time, and plot the score along the way. The x-axis is distance along that tour, not search time. Peaks are the summits the climbs reached; the deep troughs between them are the low-scoring decks that separate one summit from the next.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 7. ONE CLIMB AS A GRAPH -->
+  <section id="graph">
+    <h2><span class="num">07</span>One climb, as a graph</h2>
+    <p>
+      One last view — a graph, since the search really is one. The full swap-graph is
+      hopeless to draw: <code>52!</code> nodes, each wired to <strong>1326</strong> others. But a single
+      climb is one thread through it. Below, the trunk is the path a climb took; at each deck it
+      visited, the <span style="color:var(--good);font-weight:650">green twigs</span> are the
+      <em>other</em> uphill swaps it could have taken. Watch the bristle of options thin as the climb
+      rises — until the final deck sprouts <strong>none at all</strong>, and the thread simply ends.
+    </p>
+    <div class="controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="graph-seg"></div>
+    </div>
+    <figure class="figure">
+      <div id="chart-graph"></div>
+      <figcaption>A representative climb as a branching tree. Trunk = the chosen path; green twigs = the number of other improving swaps at each step (of 1326 total); the red ✕ marks the local optimum, where zero swaps go up. Hover a node for its exact branch counts.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 8. THE GA'S MUTATION TOOLKIT -->
+  <section id="operators">
+    <h2><span class="num">08</span>The genetic algorithm's broken toolbox</h2>
+    <p>
+      Hill climbing is crude — surely a <strong>genetic algorithm</strong> does better? It comes with
+      a whole toolkit of five mutation operators, not just single swaps. But an operator is only
+      useful if it can nudge a deck to a <em>better</em> score. Here's what each one actually does.
+      Two of them break the search outright.
+    </p>
+    <p>
+      First, <strong>Rotation</strong> — "cut the deck at a random point" — can <em>never</em> change the
+      score. The fitness already tallies all 52 cuts, so rotating the deck just relabels them: same
+      games, same score, every time. A full fifth of the mutation budget is dead weight.
+      Second, near a good deck <strong>every</strong> operator only makes things worse — and the
+      "aggressive" ones (block swap, reversal, scramble) are wrecking balls, hurling the deck ten-plus
+      wins downhill. None can make the small uphill step needed to reach a perfect deck.
+    </p>
+    <div class="controls" id="op-controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="op-seg"></div>
+      <span style="font-size:14px;color:var(--muted);margin-left:8px">Applied to:</span>
+      <div class="seg" id="op-regime"></div>
+    </div>
+    <div class="stat-row" id="op-stats"></div>
+    <figure class="figure">
+      <div id="chart-operators"></div>
+      <figcaption>For each mutation operator, the distribution of its effect on the score (Δ wins): <span style="color:var(--neg);font-weight:650">red</span> = made it worse, <span style="color:var(--muted);font-weight:650">gray</span> = no change, <span style="color:var(--pos);font-weight:650">blue</span> = improved. The ▸ marks the mean. Toggle between mutating fresh random decks and mutating decks that are already local optima.</figcaption>
+    </figure>
+  </section>
+
+  <!-- 9. WHAT WORKS: BEAM SEARCH -->
+  <section id="beam">
+    <h2><span class="num">09</span>What actually works: beam search</h2>
+    <p>
+      Everything so far has been an autopsy of failure. So what <em>works</em>? Beam search — by doing
+      the opposite of everything that failed. Instead of one climber it keeps a <strong>diverse
+      population</strong> of 40 decks. Instead of only-uphill steps it uses <strong>simulated
+      annealing</strong>, which accepts the occasional downhill move to climb back out of a trap.
+      And instead of counting only wins — a number that sits dead flat across the plateaus of
+      view 3 — it follows a <strong>margin-refined score</strong> that still has a gradient when the
+      win count doesn't. Watch it break through the ceiling that stopped every hill climber.
+    </p>
+    <div class="controls">
+      <span style="font-size:14px;color:var(--muted)">Players:</span>
+      <div class="seg" id="beam-seg"></div>
+    </div>
+    <div class="stat-row" id="beam-stats"></div>
+    <figure class="figure">
+      <div id="chart-beam"></div>
+      <figcaption>Beam search over iterations. The shaded band is the spread of the 40-deck beam (worst to best); the solid line is its best. The dashed line marks where hill climbing stalled. For 2 players it hits a perfect 52 almost at once; for 3 and 4 it blows past the ceiling and keeps climbing.</figcaption>
+    </figure>
+    <p>
+      But <em>why</em> can it move when a hill climber can't? Here's the trick, and it's the payoff of
+      view 3. Take a deck stuck at a local optimum: zero of its 1326 swaps improve the win count —
+      that's what "stuck" means. But score those same neighbors by <strong>margin</strong> — how
+      comfortably the dealer wins or loses each cut — and a handful suddenly point uphill. That faint
+      gradient, invisible to a win-counter, is the thread the annealer follows out.
+    </p>
+    <figure class="figure">
+      <div id="chart-margin"></div>
+      <figcaption>Of a stuck deck's 1326 swap-neighbors, how many actually raise the score — judged by raw win count vs. the margin-refined score beam search optimizes. The win count sees no way up at all; the margin reveals a handful. (Most neighbors still go downhill either way — the annealer only needs the few that don't, plus its willingness to step down.)</figcaption>
+    </figure>
+  </section>
+
+  <section id="outro">
+    <p>
+      The picture is consistent across the first eight views: this landscape is <strong>rugged</strong> —
+      packed with local optima — and it gets ruggeder with more players. Steepest-ascent hill
+      climbing is a purely local move; it can only ever walk to the nearest hilltop, and here the
+      nearest hilltop is almost never the summit. A genetic algorithm was supposed to escape that,
+      but its operators fight the problem instead of fitting it — one can't change the score at all,
+      and the rest only demolish good decks. What finally works (view 9) does none of those things:
+      it keeps a diverse population, accepts downhill moves to escape traps, and — most importantly —
+      optimizes a <strong>score with a gradient</strong> instead of a flat win-count. Match the moves
+      to the terrain, and even a landscape this rugged gives way.
+    </p>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<div id="tt"></div>
+
+<script>
+/*__LANDSCAPE_DATA__*/
+
+// ------------------------------------------------------------------ helpers
+const SVGNS = "http://www.w3.org/2000/svg";
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const N_COLORS = { 2: "var(--n2)", 3: "var(--n3)", 4: "var(--n4)" };
+const byN = {};
+DATA.players.forEach(p => byN[p.n] = p);
+const PLAYER_NS = DATA.players.map(p => p.n);
+const MAXW = DATA.meta.max_wins;
+
+function svg(w, h) {
+  const s = document.createElementNS(SVGNS, "svg");
+  s.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  s.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  s.setAttribute("role", "img");
+  return s;
+}
+function el(tag, attrs = {}, parent = null) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function text(parent, x, y, str, attrs = {}) {
+  const t = el("text", Object.assign({ x, y }, attrs), parent);
+  t.textContent = str;
+  return t;
+}
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// tooltip
+const tt = document.getElementById("tt");
+function showTip(html, ev) {
+  tt.innerHTML = html;
+  tt.style.opacity = "1";
+  const pad = 14;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  const r = tt.getBoundingClientRect();
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+  tt.style.left = x + "px"; tt.style.top = y + "px";
+}
+function hideTip() { tt.style.opacity = "0"; }
+
+const cardVal = ["","A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+const cardSuit = ["♣","♠","♥","♦"]; // clubs spades hearts diamonds
+function cardLabel(b) {
+  const v = (b % 13) + 1, s = Math.floor(b / 13);
+  return { txt: cardVal[v] + cardSuit[s], red: (s >= 2) };
+}
+
+// ------------------------------------------------------------------ axis util
+function niceTicks(min, max, count) {
+  const span = (max - min) || 1;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+  step *= mag;
+  const ticks = [];
+  for (let t = Math.ceil(min / step) * step; t <= max + 1e-9; t += step) {
+    ticks.push(Math.round(t * 1e6) / 1e6);
+  }
+  return ticks;
+}
+
+// ================================================================== 1. TRAJECTORIES
+const trajState = { focus: null }; // null = all, or an n
+function renderTrajectories() {
+  const host = document.getElementById("chart-traj");
+  host.innerHTML = "";
+  const W = 760, H = 380, m = { l: 42, r: 16, t: 14, b: 34 };
+  const s = svg(W, H); host.appendChild(s);
+
+  let maxStep = 0;
+  DATA.players.forEach(p => p.trajectories.forEach(t => maxStep = Math.max(maxStep, t.length - 1)));
+  const x = v => m.l + (v / Math.max(1, maxStep)) * (W - m.l - m.r);
+  const y = v => H - m.b - (v / MAXW) * (H - m.t - m.b);
+
+  // grid + y ticks
+  niceTicks(0, MAXW, 5).forEach(tk => {
+    el("line", { x1: m.l, y1: y(tk), x2: W - m.r, y2: y(tk), stroke: css("--grid"), "stroke-width": 1 }, s);
+    text(s, m.l - 8, y(tk) + 4, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  });
+  // x ticks
+  niceTicks(0, maxStep, 6).forEach(tk => {
+    text(s, x(tk), H - m.b + 20, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+  });
+  text(s, (m.l + W - m.r) / 2, H - 4, "climbing step", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle" });
+  text(s, m.l - 30, m.t + 4, "score", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "start" });
+
+  // perfect line
+  el("line", { x1: m.l, y1: y(MAXW), x2: W - m.r, y2: y(MAXW), stroke: css("--good"), "stroke-width": 1.5, "stroke-dasharray": "4 4" }, s);
+  text(s, W - m.r, y(MAXW) - 6, "52 · perfect", { fill: css("--good"), "font-size": 11.5, "text-anchor": "end", "font-weight": 600 });
+
+  const lineGroups = {};
+  DATA.players.forEach(p => {
+    const g = el("g", {}, s); lineGroups[p.n] = g;
+    const focused = trajState.focus === null || trajState.focus === p.n;
+    const baseOp = trajState.focus === null ? 0.28 : (focused ? 0.5 : 0.05);
+    p.trajectories.forEach(traj => {
+      let d = "";
+      traj.forEach((sc, i) => d += (i ? "L" : "M") + x(i) + " " + y(sc));
+      const path = el("path", {
+        d, fill: "none", stroke: N_COLORS[p.n], "stroke-width": 1.6,
+        "stroke-opacity": baseOp, "stroke-linejoin": "round", "stroke-linecap": "round"
+      }, g);
+      path.style.cursor = "pointer";
+      path.addEventListener("pointerenter", (ev) => {
+        path.setAttribute("stroke-width", 3);
+        path.setAttribute("stroke-opacity", 1);
+        showTip(`<div class="tt-h" style="color:${N_COLORS[p.n]}">${p.n} players · one climb</div>
+          <div class="tt-r"><span>start</span><b>${traj[0]}</b></div>
+          <div class="tt-r"><span>peak</span><b>${traj[traj.length-1]}/${MAXW}</b></div>
+          <div class="tt-r"><span>steps</span><b>${traj.length-1}</b></div>`, ev);
+      });
+      path.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+      path.addEventListener("pointerleave", () => {
+        path.setAttribute("stroke-width", 1.6);
+        path.setAttribute("stroke-opacity", baseOp);
+        hideTip();
+      });
+    });
+  });
+
+  // direct labels: median peak per n at right edge, nudged apart to avoid overlap
+  const tLabels = DATA.players
+    .filter(p => trajState.focus === null || trajState.focus === p.n)
+    .map(p => {
+      const peaks = [...p.peaks].sort((a, b) => a - b);
+      return { n: p.n, y: y(peaks[Math.floor(peaks.length / 2)]) - 4 };
+    })
+    .sort((a, b) => a.y - b.y);
+  for (let i = 1; i < tLabels.length; i++)
+    if (tLabels[i].y - tLabels[i - 1].y < 15) tLabels[i].y = tLabels[i - 1].y + 15;
+  tLabels.forEach(l => text(s, W - m.r - 2, l.y, `n=${l.n}`, {
+    fill: N_COLORS[l.n], "font-size": 12.5, "font-weight": 700, "text-anchor": "end"
+  }));
+}
+function buildTrajLegend() {
+  const lg = document.getElementById("traj-legend");
+  lg.innerHTML = "";
+  const mk = (label, color, key) => {
+    const b = document.createElement("button");
+    b.className = "seg-plain";
+    b.style.cssText = "appearance:none;border:0;background:transparent;cursor:pointer;font:inherit;padding:0;color:var(--ink-2)";
+    b.innerHTML = `<span class="item"><span class="swatch line" style="background:${color}"></span>${label}</span>`;
+    b.onclick = () => { trajState.focus = (trajState.focus === key ? null : key); renderTrajectories(); syncLegendState(); };
+    lg.appendChild(b);
+    return b;
+  };
+  mk("all", "linear-gradient(90deg,var(--n2),var(--n3),var(--n4))", null);
+  DATA.players.forEach(p => mk(`${p.n} players`, N_COLORS[p.n], p.n));
+  syncLegendState();
+  function syncLegendState() {}
+}
+function syncLegendState() {
+  document.querySelectorAll("#traj-legend button").forEach((b, i) => {
+    const key = i === 0 ? null : PLAYER_NS[i - 1];
+    // With no focus, nothing is filtered — show every item at full strength.
+    const active = trajState.focus === null || key === trajState.focus;
+    b.style.opacity = active ? "1" : "0.4";
+    b.style.fontWeight = key === trajState.focus ? "700" : "500";
+  });
+}
+
+// ================================================================== 2. OPTIMA HISTOGRAM
+function renderOptima() {
+  const host = document.getElementById("chart-optima");
+  host.innerHTML = "";
+  // shared x-domain
+  let lo = MAXW, hi = MAXW;
+  DATA.players.forEach(p => p.peaks.forEach(v => { lo = Math.min(lo, v); hi = Math.max(hi, v); }));
+  lo = Math.max(0, lo - 1); hi = MAXW;
+  const rowH = 96, gap = 14, W = 760, m = { l: 42, r: 16, t: 8, b: 22 };
+  const H = DATA.players.length * (rowH + gap) + 20;
+  const s = svg(W, H); host.appendChild(s);
+  const x = v => m.l + ((v - lo) / Math.max(1, hi - lo)) * (W - m.l - m.r);
+
+  DATA.players.forEach((p, ri) => {
+    const y0 = ri * (rowH + gap) + 6;
+    // histogram counts
+    const counts = {};
+    p.peaks.forEach(v => counts[v] = (counts[v] || 0) + 1);
+    const maxC = Math.max(...Object.values(counts));
+    const baseY = y0 + rowH - m.b;
+    const barW = Math.max(6, (W - m.l - m.r) / (hi - lo + 1) - 4);
+
+    // baseline
+    el("line", { x1: m.l, y1: baseY, x2: W - m.r, y2: baseY, stroke: css("--axis"), "stroke-width": 1 }, s);
+    // row label
+    text(s, m.l, y0 + 14, `${p.n} players`, { fill: N_COLORS[p.n], "font-size": 14, "font-weight": 700 });
+    const pct = (100 * p.reached_optimum_count / p.peaks.length);
+    text(s, W - m.r, y0 + 14, `${p.reached_optimum_count}/${p.peaks.length} reached 52  (${pct.toFixed(0)}%)`,
+      { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+
+    for (const sc in counts) {
+      const c = counts[sc];
+      const h = (c / maxC) * (rowH - m.t - m.b - 8);
+      const bx = x(+sc) - barW / 2;
+      const r = el("rect", {
+        x: bx, y: baseY - h, width: barW, height: h, rx: 3,
+        fill: N_COLORS[p.n], "fill-opacity": 0.9
+      }, s);
+      r.addEventListener("pointerenter", (ev) => showTip(
+        `<div class="tt-h" style="color:${N_COLORS[p.n]}">${p.n} players</div>
+         <div class="tt-r"><span>peak score</span><b>${sc}/${MAXW}</b></div>
+         <div class="tt-r"><span>climbs</span><b>${c}</b></div>`, ev));
+      r.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+      r.addEventListener("pointerleave", hideTip);
+    }
+    // 52 marker
+    el("line", { x1: x(MAXW), y1: y0 + 20, x2: x(MAXW), y2: baseY, stroke: css("--good"), "stroke-width": 1.5, "stroke-dasharray": "3 3" }, s);
+
+    // x ticks on last row
+    if (ri === DATA.players.length - 1) {
+      niceTicks(lo, hi, 6).forEach(tk => {
+        text(s, x(tk), baseY + 16, tk, { fill: css("--muted"), "font-size": 11.5, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+      });
+      text(s, (m.l + W - m.r) / 2, H - 2, "final (local-optimum) score", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle" });
+    }
+  });
+}
+
+// ================================================================== 3. NEIGHBOR PROFILE
+const nbrState = { n: PLAYER_NS[PLAYER_NS.length - 1] };
+function renderNeighborProfile() {
+  const host = document.getElementById("chart-nbr");
+  host.innerHTML = "";
+  const p = byN[nbrState.n];
+  const W = 760, rowH = 64, m = { l: 120, r: 16, t: 40, b: 10 };
+  const H = m.t + rowH * 2 + 40;
+  const s = svg(W, H); host.appendChild(s);
+  const total = DATA.meta.num_neighbors;
+  const x = v => m.l + (v / total) * (W - m.l - m.r);
+
+  const segs = [
+    { key: "worse", label: "worse", color: css("--neg") },
+    { key: "equal", label: "same", color: css("--neutral-ink") },
+    { key: "better", label: "better", color: css("--pos") },
+  ];
+  // header legend
+  let lx = m.l;
+  segs.forEach(sg => {
+    el("rect", { x: lx, y: 12, width: 13, height: 13, rx: 3, fill: sg.color }, s);
+    text(s, lx + 19, 23, sg.label, { fill: css("--ink-2"), "font-size": 12.5 });
+    lx += 19 + sg.label.length * 7.5 + 20;
+  });
+
+  const rows = [
+    { title: "random deck", prof: p.profile_random, sub: "typical starting point" },
+    { title: "local optimum", prof: p.profile_optimum, sub: "where a climb ends" },
+  ];
+  rows.forEach((row, ri) => {
+    const y0 = m.t + ri * rowH;
+    const cy = y0 + 16;
+    text(s, m.l - 12, cy + 5, row.title, { fill: css("--ink"), "font-size": 13.5, "font-weight": 650, "text-anchor": "end" });
+    text(s, m.l - 12, cy + 21, row.sub, { fill: css("--muted"), "font-size": 11, "text-anchor": "end" });
+    let cx = 0;
+    segs.forEach(sg => {
+      const val = row.prof[sg.key];
+      const w = x(val) - x(0);
+      if (w > 0.3) {
+        const r = el("rect", { x: x(cx), y: cy - 4, width: Math.max(0, w - 2), height: 26, rx: 4, fill: sg.color }, s);
+        r.addEventListener("pointerenter", (ev) => showTip(
+          `<div class="tt-h">${row.title} · ${p.n}p</div>
+           <div class="tt-r"><span style="color:${sg.color}">${sg.label} swaps</span><b>${val.toFixed(0)}</b></div>
+           <div class="tt-r"><span>of</span><b>${total}</b></div>`, ev));
+        r.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+        r.addEventListener("pointerleave", hideTip);
+      }
+      cx += val;
+    });
+    // "better" callout number
+    const betterW = x(row.prof.better) - x(0);
+    const label = row.prof.better < 0.5 ? "0 uphill moves" : `${row.prof.better.toFixed(0)} uphill`;
+    const anchorX = betterW > 60 ? x(cx) - betterW / 2 : x(cx) + 6;
+    text(s, anchorX, cy + 34, label, {
+      fill: row.prof.better < 0.5 ? css("--neg") : css("--pos"),
+      "font-size": 12, "font-weight": 700,
+      "text-anchor": betterW > 60 ? "middle" : "start"
+    });
+  });
+}
+
+// ================================================================== 4. COLLAPSE CURVE
+const collapseState = { focus: null };
+function renderCollapse() {
+  const host = document.getElementById("chart-collapse");
+  host.innerHTML = "";
+  const W = 760, H = 380, m = { l: 52, r: 16, t: 14, b: 40 };
+  const s = svg(W, H); host.appendChild(s);
+
+  let xmin = Infinity, xmax = -Infinity, ymax = 0;
+  DATA.players.forEach(p => p.curve.forEach(c => {
+    xmin = Math.min(xmin, c.score); xmax = Math.max(xmax, c.score);
+    ymax = Math.max(ymax, c.better_mean);
+  }));
+  const x = v => m.l + ((v - xmin) / Math.max(1, xmax - xmin)) * (W - m.l - m.r);
+  const y = v => H - m.b - (v / ymax) * (H - m.t - m.b);
+
+  niceTicks(0, ymax, 5).forEach(tk => {
+    el("line", { x1: m.l, y1: y(tk), x2: W - m.r, y2: y(tk), stroke: css("--grid"), "stroke-width": 1 }, s);
+    text(s, m.l - 8, y(tk) + 4, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  });
+  niceTicks(xmin, xmax, 6).forEach(tk => {
+    text(s, x(tk), H - m.b + 20, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+  });
+  text(s, (m.l + W - m.r) / 2, H - 6, "current score during the climb", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle" });
+  el("text", { x: 14, y: (m.t + H - m.b) / 2, fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle", transform: `rotate(-90 14 ${(m.t + H - m.b) / 2})` }, s).textContent = "improving neighbors";
+
+  const cLabels = [];
+  DATA.players.forEach(p => {
+    const focused = collapseState.focus === null || collapseState.focus === p.n;
+    const op = collapseState.focus === null ? 1 : (focused ? 1 : 0.15);
+    let d = "";
+    p.curve.forEach((c, i) => d += (i ? "L" : "M") + x(c.score) + " " + y(c.better_mean));
+    el("path", { d, fill: "none", stroke: N_COLORS[p.n], "stroke-width": focused ? 2.5 : 1.5, "stroke-opacity": op, "stroke-linejoin": "round" }, s);
+    const first = p.curve[0];
+    cLabels.push({ n: p.n, x: x(first.score) + 4, y: y(first.better_mean) - 6, op });
+  });
+  // nudge labels apart when clustered near the high-left corner
+  cLabels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < cLabels.length; i++)
+    if (Math.abs(cLabels[i].x - cLabels[i - 1].x) < 46 && cLabels[i].y - cLabels[i - 1].y < 15)
+      cLabels[i].y = cLabels[i - 1].y + 15;
+  cLabels.forEach(l => text(s, l.x, l.y, `n=${l.n}`, { fill: N_COLORS[l.n], "font-size": 12.5, "font-weight": 700, "opacity": l.op }));
+
+  // crosshair overlay
+  const overlay = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, s);
+  overlay.style.cursor = "crosshair";
+  const cross = el("line", { x1: 0, y1: m.t, x2: 0, y2: H - m.b, stroke: css("--axis"), "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0 }, s);
+  const dots = DATA.players.map(p => el("circle", { r: 4, fill: N_COLORS[p.n], stroke: css("--surface"), "stroke-width": 2, opacity: 0 }, s));
+  overlay.addEventListener("pointermove", (ev) => {
+    const rect = s.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) / rect.width * W;
+    const score = Math.round(xmin + (px - m.l) / (W - m.l - m.r) * (xmax - xmin));
+    cross.setAttribute("x1", x(score)); cross.setAttribute("x2", x(score)); cross.setAttribute("opacity", 1);
+    let rows = "";
+    DATA.players.forEach((p, i) => {
+      const c = p.curve.find(c => c.score === score);
+      if (c) {
+        dots[i].setAttribute("cx", x(score)); dots[i].setAttribute("cy", y(c.better_mean)); dots[i].setAttribute("opacity", 1);
+        rows += `<div class="tt-r"><span style="color:${N_COLORS[p.n]}">n=${p.n}</span><b>${c.better_mean.toFixed(1)}</b></div>`;
+      } else { dots[i].setAttribute("opacity", 0); }
+    });
+    showTip(`<div class="tt-h">score ${score}/${MAXW}</div><div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">avg uphill swaps</div>${rows}`, ev);
+  });
+  overlay.addEventListener("pointerleave", () => { cross.setAttribute("opacity", 0); dots.forEach(d => d.setAttribute("opacity", 0)); hideTip(); });
+}
+
+// ================================================================== 5. DECK INSPECTOR
+const inspState = { n: PLAYER_NS[PLAYER_NS.length - 1] };
+// diverging color: margin>0 blue (win), <0 red (loss), 0/tie red-ish
+function marginColor(mg) {
+  if (mg > 0) {
+    const t = Math.min(1, Math.log10(1 + mg) / Math.log10(1 + 1200));
+    return mix(css("--pos"), css("--pos-strong"), t);
+  } else {
+    const t = Math.min(1, Math.log10(1 + Math.abs(mg)) / Math.log10(1 + 1200));
+    return mix(css("--neg"), css("--neg-strong"), Math.max(0.15, t));
+  }
+}
+function mix(a, b, t) {
+  const pa = parse(a), pb = parse(b);
+  const c = pa.map((v, i) => Math.round(lerp(v, pb[i], t)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+function parse(c) {
+  const cv = document.createElement("canvas").getContext("2d");
+  cv.fillStyle = c; const h = cv.fillStyle;
+  if (h[0] === "#") return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+  const m = h.match(/\d+/g).map(Number); return [m[0], m[1], m[2]];
+}
+function renderInspector() {
+  const host = document.getElementById("chart-insp");
+  host.innerHTML = "";
+  const p = byN[inspState.n];
+  const W = 760, cell = (W - 60) / MAXW, m = { l: 60, t: 30 };
+  const rowGap = 96;
+  const H = m.t + rowGap * 2 + 20;
+  const s = svg(W, H); host.appendChild(s);
+
+  const decks = [
+    { title: "representative local optimum", dv: p.inspector.optimum },
+    { title: "best deck found", dv: p.inspector.best_found },
+  ];
+  decks.forEach((row, ri) => {
+    const y0 = m.t + ri * rowGap;
+    const losing = row.dv.margins.filter(v => v <= 0).length;
+    text(s, m.l, y0 - 12, row.title, { fill: css("--ink"), "font-size": 13.5, "font-weight": 650 });
+    text(s, W, y0 - 12, `${row.dv.score}/${MAXW} wins · ${losing} losing cuts`,
+      { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+
+    row.dv.margins.forEach((mg, i) => {
+      const r = el("rect", {
+        x: m.l + i * cell, y: y0, width: Math.max(1, cell - 1.5), height: 40, rx: 2,
+        fill: marginColor(mg)
+      }, s);
+      r.addEventListener("pointerenter", (ev) => {
+        const dealt = cardLabel(row.dv.deck[i]);
+        showTip(
+          `<div class="tt-h">cut at position ${i}</div>
+           <div class="tt-r"><span>outcome</span><b style="color:${mg>0?css('--pos'):css('--neg')}">${mg>0?"dealer wins":"dealer loses"}</b></div>
+           <div class="tt-r"><span>margin</span><b>${mg>0?"+":""}${mg}</b></div>`, ev);
+      });
+      r.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+      r.addEventListener("pointerleave", hideTip);
+    });
+    // axis hint
+    text(s, m.l, y0 + 56, "0", { fill: css("--muted"), "font-size": 11, "text-anchor": "start" });
+    text(s, m.l + MAXW * cell, y0 + 56, String(MAXW - 1), { fill: css("--muted"), "font-size": 11, "text-anchor": "end" });
+    text(s, m.l + (MAXW * cell) / 2, y0 + 56, "cut position →", { fill: css("--muted"), "font-size": 11, "text-anchor": "middle" });
+  });
+}
+
+// ================================================================== 6. TOPOLOGY / RIDGE WALK
+const topoState = { n: PLAYER_NS[PLAYER_NS.length - 1] };
+
+function renderTopoStats() {
+  const p = byN[topoState.n];
+  const host = document.getElementById("topo-stats");
+  // mean valley drop: for each pair of consecutive summits, how far the walk
+  // descends below the lower of the two peaks.
+  const r = p.ridge;
+  let dropSum = 0, dropN = 0;
+  for (let k = 1; k < r.peaks.length; k++) {
+    const a = r.peaks[k - 1], b = r.peaks[k];
+    let lo = Infinity;
+    for (let i = a; i <= b; i++) lo = Math.min(lo, r.scores[i]);
+    const rim = Math.min(r.scores[a], r.scores[b]);
+    dropSum += (rim - lo); dropN++;
+  }
+  const drop = dropN ? (dropSum / dropN) : 0;
+  const stats = [
+    { v: `${p.distinct_optima} / ${p.total_climbs}`, l: "climbs → distinct summits" },
+    { v: `${p.mean_pairwise_distance.toFixed(0)} / ${DATA.meta.num_cards}`, l: "cards apart, summit to summit" },
+    { v: `−${drop.toFixed(0)}`, l: "typical drop into the valley between" },
+  ];
+  host.innerHTML = stats.map(s =>
+    `<div class="stat"><div class="v" style="color:${N_COLORS[p.n]}">${s.v}</div><div class="l">${s.l}</div></div>`
+  ).join("");
+}
+
+function renderRidge() {
+  const host = document.getElementById("chart-ridge");
+  host.innerHTML = "";
+  const p = byN[topoState.n];
+  const r = p.ridge;
+  const W = 760, H = 340, m = { l: 44, r: 16, t: 18, b: 30 };
+  const s = svg(W, H); host.appendChild(s);
+  const n = r.scores.length;
+  const x = i => m.l + (i / Math.max(1, n - 1)) * (W - m.l - m.r);
+  const y = v => H - m.b - (v / MAXW) * (H - m.t - m.b);
+  const col = N_COLORS[p.n];
+
+  // y grid
+  niceTicks(0, MAXW, 5).forEach(tk => {
+    el("line", { x1: m.l, y1: y(tk), x2: W - m.r, y2: y(tk), stroke: css("--grid"), "stroke-width": 1 }, s);
+    text(s, m.l - 8, y(tk) + 4, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  });
+  // perfect line
+  el("line", { x1: m.l, y1: y(MAXW), x2: W - m.r, y2: y(MAXW), stroke: css("--good"), "stroke-width": 1.5, "stroke-dasharray": "4 4" }, s);
+  text(s, W - m.r, y(MAXW) - 6, "52 · perfect", { fill: css("--good"), "font-size": 11.5, "text-anchor": "end", "font-weight": 600 });
+
+  // mountain-range silhouette: filled area under the walk
+  let area = `M ${x(0)} ${y(r.scores[0])}`;
+  r.scores.forEach((sc, i) => { area += ` L ${x(i)} ${y(sc)}`; });
+  area += ` L ${x(n - 1)} ${y(0)} L ${x(0)} ${y(0)} Z`;
+  el("path", { d: area, fill: col, "fill-opacity": 0.13, stroke: "none" }, s);
+  // the ridge line on top
+  let line = "";
+  r.scores.forEach((sc, i) => line += (i ? "L" : "M") + x(i) + " " + y(sc));
+  el("path", { d: line, fill: "none", stroke: col, "stroke-width": 1.8, "stroke-linejoin": "round" }, s);
+
+  // summit markers
+  r.peaks.forEach((pi, k) => {
+    el("circle", { cx: x(pi), cy: y(r.scores[pi]), r: 4.5, fill: col, stroke: css("--surface"), "stroke-width": 2 }, s);
+    text(s, x(pi), y(r.scores[pi]) - 10, r.scores[pi], { fill: col, "font-size": 11, "font-weight": 700, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+  });
+
+  text(s, (m.l + W - m.r) / 2, H - 4, "single-swap walk hopping from summit to summit →", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle" });
+  el("text", { x: 13, y: (m.t + H - m.b) / 2, fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle", transform: `rotate(-90 13 ${(m.t + H - m.b) / 2})` }, s).textContent = "score";
+
+  // hover crosshair
+  const overlay = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, s);
+  overlay.style.cursor = "crosshair";
+  const cross = el("line", { x1: 0, y1: m.t, x2: 0, y2: H - m.b, stroke: css("--axis"), "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0 }, s);
+  const dot = el("circle", { r: 3.5, fill: col, stroke: css("--surface"), "stroke-width": 1.5, opacity: 0 }, s);
+  overlay.addEventListener("pointermove", (ev) => {
+    const rect = s.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) / rect.width * W;
+    let i = Math.round((px - m.l) / (W - m.l - m.r) * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 1);
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(r.scores[i])); dot.setAttribute("opacity", 1);
+    const onPeak = r.peaks.includes(i);
+    showTip(`<div class="tt-h" style="color:${col}">${onPeak ? "at a summit" : "crossing a valley"}</div>
+      <div class="tt-r"><span>score here</span><b>${r.scores[i]}/${MAXW}</b></div>`, ev);
+  });
+  overlay.addEventListener("pointerleave", () => { cross.setAttribute("opacity", 0); dot.setAttribute("opacity", 0); hideTip(); });
+}
+
+// ================================================================== 7. ONE CLIMB AS A GRAPH
+const graphState = { n: PLAYER_NS[PLAYER_NS.length - 1] };
+function renderClimbGraph() {
+  const host = document.getElementById("chart-graph");
+  host.innerHTML = "";
+  const p = byN[graphState.n];
+  const sc = p.sample_climb;
+  const L = sc.scores.length;
+  const col = N_COLORS[p.n];
+  const W = 760, H = 360, m = { l: 44, r: 20, t: 40, b: 42 };
+  const s = svg(W, H); host.appendChild(s);
+  const x = i => m.l + (L <= 1 ? 0.5 : i / (L - 1)) * (W - m.l - m.r);
+  const y = v => H - m.b - (v / MAXW) * (H - m.t - m.b);
+
+  // y grid + perfect line
+  niceTicks(0, MAXW, 5).forEach(tk => {
+    el("line", { x1: m.l, y1: y(tk), x2: W - m.r, y2: y(tk), stroke: css("--grid"), "stroke-width": 1 }, s);
+    text(s, m.l - 8, y(tk) + 4, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  });
+  el("line", { x1: m.l, y1: y(MAXW), x2: W - m.r, y2: y(MAXW), stroke: css("--good"), "stroke-width": 1.5, "stroke-dasharray": "4 4" }, s);
+  text(s, W - m.r, y(MAXW) - 6, "52 · perfect", { fill: css("--good"), "font-size": 11.5, "text-anchor": "end", "font-weight": 600 });
+
+  const good = css("--good");
+  const TWIG_MAX = 10, TWIG_LEN = 19;
+
+  // twigs first (behind trunk): the uphill options at each node. Draw a count
+  // scaled by log2(better) so the fan visibly thins from hundreds down to zero.
+  for (let i = 0; i < L; i++) {
+    const b = sc.better[i];
+    const nTwig = b > 0 ? Math.min(TWIG_MAX, Math.max(1, Math.round(Math.log2(1 + b)))) : 0;
+    for (let t = 0; t < nTwig; t++) {
+      const ang = (25 + (nTwig === 1 ? 45 : (78 * t) / (nTwig - 1))) * Math.PI / 180; // 25°..103° up-forward
+      const ex = x(i) + TWIG_LEN * Math.cos(ang);
+      const ey = y(sc.scores[i]) - TWIG_LEN * Math.sin(ang);
+      el("line", { x1: x(i), y1: y(sc.scores[i]), x2: ex, y2: ey, stroke: good, "stroke-width": 1.2, "stroke-opacity": 0.5 }, s);
+      el("circle", { cx: ex, cy: ey, r: 1.7, fill: good, "fill-opacity": 0.6 }, s);
+    }
+  }
+
+  // trunk: the path actually taken
+  let trunk = "";
+  sc.scores.forEach((v, i) => trunk += (i ? "L" : "M") + x(i) + " " + y(v));
+  el("path", { d: trunk, fill: "none", stroke: css("--ink-2"), "stroke-width": 2, "stroke-linejoin": "round" }, s);
+
+  // nodes + per-node uphill count below
+  for (let i = 0; i < L; i++) {
+    const terminal = i === L - 1;
+    const node = el("circle", {
+      cx: x(i), cy: y(sc.scores[i]), r: terminal ? 5 : 3.5,
+      fill: terminal ? css("--neg") : col, stroke: css("--surface"), "stroke-width": 1.5
+    }, s);
+    node.style.cursor = "pointer";
+    node.addEventListener("pointerenter", (ev) => showTip(
+      `<div class="tt-h" style="color:${terminal ? css('--neg') : col}">step ${i} · score ${sc.scores[i]}/${MAXW}</div>
+       <div class="tt-r"><span style="color:${good}">▲ up</span><b>${sc.better[i]}</b></div>
+       <div class="tt-r"><span>= level</span><b>${sc.equal[i]}</b></div>
+       <div class="tt-r"><span style="color:${css('--neg')}">▼ down</span><b>${sc.worse[i]}</b></div>
+       <div class="tt-r"><span>of</span><b>${DATA.meta.num_neighbors}</b></div>`, ev));
+    node.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+    node.addEventListener("pointerleave", hideTip);
+    // uphill count label below the node
+    text(s, x(i), y(sc.scores[i]) + 15, terminal ? "0" : String(sc.better[i]),
+      { fill: terminal ? css("--neg") : good, "font-size": 10.5, "text-anchor": "middle", "font-weight": 600, "font-variant-numeric": "tabular-nums" });
+  }
+
+  // terminal ✕ + label
+  const lx = x(L - 1), ly = y(sc.scores[L - 1]);
+  text(s, lx - 8, ly + 4, "✕ stuck", { fill: css("--neg"), "font-size": 12, "font-weight": 700, "text-anchor": "end" });
+
+  text(s, (m.l + W - m.r) / 2, H - 6, "step along the climb  ·  green number = uphill swaps available (of 1326)", { fill: css("--muted"), "font-size": 12, "text-anchor": "middle" });
+}
+
+// ================================================================== 8. MUTATION OPERATORS
+const opState = { n: PLAYER_NS[PLAYER_NS.length - 1], regime: "optimum" };
+const OP_ORDER = ["Swap", "Block swap", "Reversal", "Scramble", "Rotation"]; // scalpel → sledgehammers → dead
+
+function renderOpStats() {
+  const p = byN[opState.n];
+  const ops = p.operators[opState.regime];
+  const byName = {}; ops.forEach(o => byName[o.name] = o);
+  const meanImprove = ops.reduce((a, o) => a + o.improve, 0) / ops.length;
+  const aggMed = Math.min(...["Block swap", "Reversal", "Scramble"].map(nm => byName[nm].median_delta));
+  const col = N_COLORS[opState.n];
+  const improveTxt = (meanImprove * 100 < 0.5) ? "≈0%" : (meanImprove * 100).toFixed(0) + "%";
+  const stats = [
+    { v: improveTxt, l: "of mutations raise the score" },
+    { v: "1 / 5", l: "operators can never change it (Rotation)" },
+    { v: (aggMed > 0 ? "+" : "") + aggMed, l: "median Δ wins from an aggressive mutation" },
+  ];
+  document.getElementById("op-stats").innerHTML = stats.map(sx =>
+    `<div class="stat"><div class="v" style="color:${col}">${sx.v}</div><div class="l">${sx.l}</div></div>`
+  ).join("");
+}
+
+function renderOperators() {
+  const host = document.getElementById("chart-operators");
+  host.innerHTML = "";
+  const p = byN[opState.n];
+  const ops = p.operators[opState.regime];
+  const byName = {}; ops.forEach(o => byName[o.name] = o);
+  const rows = OP_ORDER.map(nm => byName[nm]);
+
+  const labelW = 116, statW = 92, rowH = 62;
+  const W = 760, m = { t: 8, b: 34 };
+  const plotL = labelW, plotR = W - statW;
+  const H = m.t + rows.length * rowH + m.b;
+  const s = svg(W, H); host.appendChild(s);
+
+  // shared delta domain across all shown operators
+  let dmin = 0, dmax = 0;
+  rows.forEach(o => o.deltas.forEach(d => { dmin = Math.min(dmin, d.delta); dmax = Math.max(dmax, d.delta); }));
+  dmin = Math.max(-28, dmin) - 1; dmax = Math.min(14, dmax) + 1;
+  const x = d => plotL + ((d - dmin) / (dmax - dmin)) * (plotR - plotL);
+  const unit = x(1) - x(0);
+  const bw = Math.max(3, unit - 2.5);
+
+  const cNeg = css("--neg"), cPos = css("--pos"), cNeu = css("--neutral-ink");
+  const barColor = d => d < 0 ? cNeg : d > 0 ? cPos : cNeu;
+
+  rows.forEach((o, ri) => {
+    const y0 = m.t + ri * rowH;
+    const baseY = y0 + rowH - 16;
+    const maxBarH = rowH - 26;
+    const dead = o.name === "Rotation";
+
+    // row label
+    text(s, 0, y0 + 22, o.name, { fill: css("--ink"), "font-size": 13.5, "font-weight": 650 });
+    text(s, 0, y0 + 37, o.desc, { fill: css("--muted"), "font-size": 10.5 });
+
+    // faint baseline + zero line
+    el("line", { x1: plotL, y1: baseY, x2: plotR, y2: baseY, stroke: css("--grid"), "stroke-width": 1 }, s);
+    el("line", { x1: x(0), y1: y0 + 4, x2: x(0), y2: baseY, stroke: css("--axis"), "stroke-width": 1, "stroke-dasharray": "2 3" }, s);
+
+    // per-row normalized histogram
+    const rowMax = Math.max(...o.deltas.map(d => d.count), 1e-9);
+    o.deltas.forEach(d => {
+      if (d.delta < dmin || d.delta > dmax) return;
+      const h = (d.count / rowMax) * maxBarH;
+      const r = el("rect", {
+        x: x(d.delta) - bw / 2, y: baseY - h, width: bw, height: h, rx: 2,
+        fill: barColor(d.delta), "fill-opacity": dead ? 0.9 : 0.9
+      }, s);
+      r.addEventListener("pointerenter", (ev) => showTip(
+        `<div class="tt-h" style="color:${barColor(d.delta)}">${o.name}</div>
+         <div class="tt-r"><span>Δ score</span><b>${d.delta > 0 ? "+" : ""}${d.delta}</b></div>
+         <div class="tt-r"><span>share</span><b>${(d.count * 100).toFixed(1)}%</b></div>`, ev));
+      r.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+      r.addEventListener("pointerleave", hideTip);
+    });
+
+    // mean marker (▸ caret at the mean delta)
+    const mx = x(Math.max(dmin, Math.min(dmax, o.mean_delta)));
+    el("path", { d: `M ${mx - 4} ${baseY + 3} L ${mx + 4} ${baseY + 3} L ${mx} ${baseY + 9} Z`, fill: css("--ink-2") }, s);
+
+    // right-side stat
+    const improvePct = o.improve * 100;
+    text(s, W, y0 + 20, `▲ ${improvePct < 0.05 ? "0" : improvePct.toFixed(improvePct < 10 ? 1 : 0)}%`, {
+      fill: improvePct > 0.05 ? cPos : css("--muted"), "font-size": 14, "font-weight": 700, "text-anchor": "end"
+    });
+    text(s, W, y0 + 36, `med ${o.median_delta > 0 ? "+" : ""}${o.median_delta}`, {
+      fill: css("--muted"), "font-size": 11.5, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+    if (dead) text(s, W, y0 + 51, "never helps", { fill: cNeg, "font-size": 10.5, "text-anchor": "end", "font-weight": 600 });
+  });
+
+  // shared x-axis
+  const axY = m.t + rows.length * rowH;
+  niceTicks(dmin, dmax, 7).forEach(tk => {
+    text(s, x(tk), axY + 14, (tk > 0 ? "+" : "") + tk, { fill: css("--muted"), "font-size": 11, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+  });
+  text(s, (plotL + plotR) / 2, axY + 30, "change in score after one mutation  (Δ wins)", { fill: css("--muted"), "font-size": 12, "text-anchor": "middle" });
+}
+
+function buildRegimeSeg() {
+  const host = document.getElementById("op-regime"); host.innerHTML = "";
+  [["optimum", "a local optimum"], ["random", "a random deck"]].forEach(([val, label]) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.setAttribute("aria-pressed", opState.regime === val ? "true" : "false");
+    b.onclick = () => {
+      opState.regime = val;
+      host.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", "false"));
+      b.setAttribute("aria-pressed", "true");
+      renderOpStats(); renderOperators();
+    };
+    host.appendChild(b);
+  });
+}
+
+// ================================================================== 9. BEAM SEARCH
+const beamState = { n: PLAYER_NS[PLAYER_NS.length - 1] };
+
+function ceilingOf(p) { const s = [...p.peaks].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; }
+
+function renderBeamStats() {
+  const p = byN[beamState.n];
+  const its = p.beam.iters;
+  const finalBest = its[its.length - 1].best;
+  const ceil = ceilingOf(p);
+  const broke = its.find(t => t.best > ceil);
+  const col = N_COLORS[p.n];
+  const stats = [
+    { v: `${finalBest} / ${MAXW}`, l: p.beam.reached ? "solved — a perfect deck" : "beam's best (still climbing)" },
+    { v: broke ? `iter ${broke.iter}` : "—", l: "when it passed the hill-climbing ceiling" },
+    { v: `${p.margin_gradient.hyb_up}`, l: "uphill moves the margin reveals (wins show 0)" },
+  ];
+  document.getElementById("beam-stats").innerHTML = stats.map(sx =>
+    `<div class="stat"><div class="v" style="color:${col}">${sx.v}</div><div class="l">${sx.l}</div></div>`
+  ).join("");
+}
+
+function renderBeam() {
+  const host = document.getElementById("chart-beam");
+  host.innerHTML = "";
+  const p = byN[beamState.n];
+  const its = p.beam.iters;
+  const col = N_COLORS[p.n];
+  const W = 760, H = 360, m = { l: 44, r: 16, t: 16, b: 40 };
+  const s = svg(W, H); host.appendChild(s);
+  const lastIt = its[its.length - 1].iter;
+  const x = it => m.l + (it / Math.max(1, lastIt)) * (W - m.l - m.r);
+  const y = v => H - m.b - (v / MAXW) * (H - m.t - m.b);
+
+  niceTicks(0, MAXW, 5).forEach(tk => {
+    el("line", { x1: m.l, y1: y(tk), x2: W - m.r, y2: y(tk), stroke: css("--grid"), "stroke-width": 1 }, s);
+    text(s, m.l - 8, y(tk) + 4, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "end", "font-variant-numeric": "tabular-nums" });
+  });
+  niceTicks(0, lastIt, 6).forEach(tk => {
+    text(s, x(tk), H - m.b + 20, tk, { fill: css("--muted"), "font-size": 12, "text-anchor": "middle", "font-variant-numeric": "tabular-nums" });
+  });
+  text(s, (m.l + W - m.r) / 2, H - 6, "beam-search iteration", { fill: css("--muted"), "font-size": 12.5, "text-anchor": "middle" });
+
+  // perfect line
+  el("line", { x1: m.l, y1: y(MAXW), x2: W - m.r, y2: y(MAXW), stroke: css("--good"), "stroke-width": 1.5, "stroke-dasharray": "4 4" }, s);
+  text(s, W - m.r, y(MAXW) - 6, "52 · perfect", { fill: css("--good"), "font-size": 11.5, "text-anchor": "end", "font-weight": 600 });
+  // hill-climbing ceiling
+  const ceil = ceilingOf(p);
+  el("line", { x1: m.l, y1: y(ceil), x2: W - m.r, y2: y(ceil), stroke: css("--muted"), "stroke-width": 1.5, "stroke-dasharray": "5 4" }, s);
+  text(s, m.l + 4, y(ceil) - 6, `hill climbing stalled here (${ceil})`, { fill: css("--muted"), "font-size": 11.5, "font-weight": 600 });
+
+  // beam spread band (min..max)
+  let area = `M ${x(its[0].iter)} ${y(its[0].max)}`;
+  its.forEach(t => area += ` L ${x(t.iter)} ${y(t.max)}`);
+  for (let i = its.length - 1; i >= 0; i--) area += ` L ${x(its[i].iter)} ${y(its[i].min)}`;
+  area += " Z";
+  el("path", { d: area, fill: col, "fill-opacity": 0.14, stroke: "none" }, s);
+  // best line
+  let best = "";
+  its.forEach((t, i) => best += (i ? "L" : "M") + x(t.iter) + " " + y(t.best));
+  el("path", { d: best, fill: "none", stroke: col, "stroke-width": 2.5, "stroke-linejoin": "round" }, s);
+
+  // solved marker
+  if (p.beam.reached) {
+    const hit = its.find(t => t.best >= MAXW);
+    if (hit) {
+      el("circle", { cx: x(hit.iter), cy: y(MAXW), r: 5, fill: css("--good"), stroke: css("--surface"), "stroke-width": 2 }, s);
+      text(s, x(hit.iter), y(MAXW) + 18, "solved", { fill: css("--good"), "font-size": 11.5, "font-weight": 700, "text-anchor": "middle" });
+    }
+  }
+
+  // crosshair
+  const overlay = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, s);
+  overlay.style.cursor = "crosshair";
+  const cross = el("line", { x1: 0, y1: m.t, x2: 0, y2: H - m.b, stroke: css("--axis"), "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0 }, s);
+  const dot = el("circle", { r: 4, fill: col, stroke: css("--surface"), "stroke-width": 2, opacity: 0 }, s);
+  overlay.addEventListener("pointermove", (ev) => {
+    const rect = s.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) / rect.width * W;
+    let it = Math.round((px - m.l) / (W - m.l - m.r) * lastIt);
+    it = Math.max(0, Math.min(lastIt, it));
+    const t = its[it];
+    cross.setAttribute("x1", x(it)); cross.setAttribute("x2", x(it)); cross.setAttribute("opacity", 1);
+    dot.setAttribute("cx", x(it)); dot.setAttribute("cy", y(t.best)); dot.setAttribute("opacity", 1);
+    showTip(`<div class="tt-h" style="color:${col}">iteration ${it}</div>
+      <div class="tt-r"><span>best</span><b>${t.best}/${MAXW}</b></div>
+      <div class="tt-r"><span>beam worst</span><b>${t.min}</b></div>
+      <div class="tt-r"><span>spread</span><b>${t.min}–${t.max}</b></div>`, ev);
+  });
+  overlay.addEventListener("pointerleave", () => { cross.setAttribute("opacity", 0); dot.setAttribute("opacity", 0); hideTip(); });
+}
+
+function renderMarginGradient() {
+  const host = document.getElementById("chart-margin");
+  host.innerHTML = "";
+  const p = byN[beamState.n];
+  const mg = p.margin_gradient;
+  const total = DATA.meta.num_neighbors;
+  const W = 760, rowH = 66, m = { l: 176, r: 90, t: 38, b: 14 };
+  const H = m.t + rowH * 2 + 12;
+  const s = svg(W, H); host.appendChild(s);
+
+  // Focus on the quantity that matters: how many of the 1326 swaps lead UPHILL.
+  const maxCount = Math.max(mg.hyb_up, mg.wins_up, 8) * 1.3;
+  const x = v => m.l + (v / maxCount) * (W - m.l - m.r);
+
+  text(s, m.l, 20, "swap-neighbors of a stuck deck that actually lead uphill", { fill: css("--ink-2"), "font-size": 13, "font-weight": 600 });
+
+  const rows = [
+    { title: "by win count", sub: "what a hill climber sees", val: mg.wins_up },
+    { title: "by margin score", sub: "what the annealer follows", val: mg.hyb_up },
+  ];
+  const cPos = css("--pos"), cNeg = css("--neg");
+  rows.forEach((row, ri) => {
+    const y0 = m.t + ri * rowH, cy = y0 + 20;
+    text(s, m.l - 14, cy - 2, row.title, { fill: css("--ink"), "font-size": 13.5, "font-weight": 650, "text-anchor": "end" });
+    text(s, m.l - 14, cy + 14, row.sub, { fill: css("--muted"), "font-size": 11, "text-anchor": "end" });
+    // baseline
+    el("line", { x1: m.l, y1: cy + 18, x2: W - m.r, y2: cy + 18, stroke: css("--grid"), "stroke-width": 1 }, s);
+    if (row.val > 0) {
+      const r = el("rect", { x: m.l, y: cy - 8, width: Math.max(2, x(row.val) - m.l), height: 26, rx: 4, fill: cPos }, s);
+      r.addEventListener("pointerenter", (ev) => showTip(
+        `<div class="tt-h" style="color:${cPos}">${row.title}</div>
+         <div class="tt-r"><span>uphill swaps</span><b>${row.val}</b></div>
+         <div class="tt-r"><span>of</span><b>${total}</b></div>`, ev));
+      r.addEventListener("pointermove", (ev) => showTip(tt.innerHTML, ev));
+      r.addEventListener("pointerleave", hideTip);
+      text(s, x(row.val) + 8, cy + 9, `${row.val}`, { fill: cPos, "font-size": 17, "font-weight": 700, "text-anchor": "start", "font-variant-numeric": "tabular-nums" });
+      text(s, x(row.val) + 8 + String(row.val).length * 11 + 6, cy + 9, "the way out", { fill: cPos, "font-size": 11.5, "text-anchor": "start" });
+    } else {
+      // zero: a red marker at the origin
+      el("line", { x1: m.l, y1: cy - 8, x2: m.l, y2: cy + 18, stroke: cNeg, "stroke-width": 3 }, s);
+      text(s, m.l + 10, cy + 9, "0", { fill: cNeg, "font-size": 17, "font-weight": 700, "text-anchor": "start" });
+      text(s, m.l + 10 + 16, cy + 9, "no way up — stuck", { fill: cNeg, "font-size": 11.5, "text-anchor": "start" });
+    }
+  });
+}
+
+// ------------------------------------------------------------------ segmented controls
+function buildSeg(hostId, state, onChange) {
+  const host = document.getElementById(hostId);
+  host.innerHTML = "";
+  PLAYER_NS.forEach(n => {
+    const b = document.createElement("button");
+    b.className = "n" + n;
+    b.textContent = n;
+    b.setAttribute("aria-pressed", state.n === n ? "true" : "false");
+    b.onclick = () => {
+      state.n = n;
+      host.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", "false"));
+      b.setAttribute("aria-pressed", "true");
+      onChange();
+    };
+    host.appendChild(b);
+  });
+}
+
+// ------------------------------------------------------------------ theme
+function applyTheme(t) {
+  if (t) document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  rerenderAll();
+}
+let themeManual = null;
+document.getElementById("themeToggle").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme")
+    || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  themeManual = cur === "dark" ? "light" : "dark";
+  applyTheme(themeManual);
+};
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (!themeManual) rerenderAll(); });
+
+// ------------------------------------------------------------------ render all
+function rerenderAll() {
+  renderTrajectories();
+  renderOptima();
+  renderNeighborProfile();
+  renderCollapse();
+  renderInspector();
+  renderTopoStats();
+  renderRidge();
+  renderClimbGraph();
+  renderOpStats();
+  renderOperators();
+  renderBeamStats();
+  renderBeam();
+  renderMarginGradient();
+}
+function init() {
+  buildTrajLegend();
+  buildSeg("nbr-seg", nbrState, renderNeighborProfile);
+  buildSeg("insp-seg", inspState, renderInspector);
+  buildSeg("topo-seg", topoState, () => { renderTopoStats(); renderRidge(); });
+  buildSeg("graph-seg", graphState, renderClimbGraph);
+  buildSeg("op-seg", opState, () => { renderOpStats(); renderOperators(); });
+  buildRegimeSeg();
+  buildSeg("beam-seg", beamState, () => { renderBeamStats(); renderBeam(); renderMarginGradient(); });
+
+  // collapse legend (reuse simple swatches)
+  const clg = document.getElementById("collapse-legend");
+  DATA.players.forEach(p => {
+    const b = document.createElement("button");
+    b.style.cssText = "appearance:none;border:0;background:transparent;cursor:pointer;font:inherit;padding:0;color:var(--ink-2)";
+    b.innerHTML = `<span class="item"><span class="swatch line" style="background:${N_COLORS[p.n]}"></span>${p.n} players</span>`;
+    b.onclick = () => { collapseState.focus = collapseState.focus === p.n ? null : p.n; renderCollapse(); };
+    clg.appendChild(b);
+  });
+
+  document.getElementById("footer").innerHTML =
+    `Computed in Rust over ${DATA.meta.restarts} random-restart climbs per player count · ` +
+    `neighborhood: ${DATA.meta.neighborhood} · seed ${DATA.meta.seed}. ` +
+    `Steepest-ascent hill climbing on the poker-deck problem.`;
+
+  rerenderAll();
+}
+window.addEventListener("resize", () => { /* SVG is responsive; re-render for crisp text metrics is optional */ });
+init();
+</script>
+</body>
+</html>

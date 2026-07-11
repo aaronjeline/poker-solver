@@ -13,6 +13,10 @@ struct Args {
     /// Timeout in seconds (0 for no timeout)
     #[arg(short, long, default_value = "3600")]
     timeout: u64,
+
+    /// Dump the generated SMT-LIB2 formula to this file and exit without solving
+    #[arg(short, long)]
+    dump: Option<String>,
 }
 
 // Card encoding: card_id = suit * 13 + value
@@ -420,6 +424,21 @@ fn main() {
 
     println!();
     println!("All constraints generated!");
+
+    // If requested, dump the SMT-LIB2 formula to disk and exit without solving.
+    if let Some(path) = &args.dump {
+        let formula = solver.to_string();
+        std::fs::write(path, &formula)
+            .unwrap_or_else(|e| panic!("Failed to write formula to {}: {}", path, e));
+        println!(
+            "Formula written to {} ({} bytes, {} assertions)",
+            path,
+            formula.len(),
+            formula.matches("(assert").count()
+        );
+        return;
+    }
+
     println!("Starting solver (this may take a very long time)...");
     println!();
 

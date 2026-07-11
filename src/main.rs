@@ -4,9 +4,11 @@ mod game;
 mod hands;
 mod precompute;
 mod search;
+mod viz;
 
 use clap::{Parser, Subcommand};
 use std::io::{self, stdout};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "poker_wins")]
@@ -25,7 +27,7 @@ enum Commands {
         /// Number of players (including dealer)
         #[arg(short, long, default_value = "2")]
         num_players: usize,
-        /// Search algorithm to use: genetic, island, beam, aco, simulated-annealing
+        /// Search algorithm to use: genetic, island, beam, aco, simulated-annealing, hill-climbing
         #[arg(short, long, default_value = "genetic")]
         algorithm: String,
     },
@@ -37,6 +39,21 @@ enum Commands {
         /// Number of random samples to test
         #[arg(short, long, default_value = "10000")]
         samples: usize,
+    },
+    /// Export an interactive fitness-landscape visualization as a self-contained HTML file
+    Viz {
+        /// Output HTML file path
+        #[arg(short, long, default_value = "landscape.html")]
+        output: PathBuf,
+        /// Number of random-restart climbs to run per player count
+        #[arg(short, long, default_value = "60")]
+        restarts: usize,
+        /// Comma-separated player counts to analyze
+        #[arg(long, default_value = "2,3,4")]
+        players: String,
+        /// RNG seed
+        #[arg(long, default_value = "4")]
+        seed: u64,
     },
 }
 
@@ -54,6 +71,7 @@ fn main() -> io::Result<()> {
                 "beam" => search::beam_search,
                 "aco" => search::ant_colony_search,
                 "simulated-annealing" => search::simulated_annealing,
+                "hill-climbing" | "hill" => search::hill_climbing,
                 _ => {
                     eprintln!("Unknown algorithm '{}'. Using genetic search.", algorithm);
                     search::genetic_search
@@ -65,6 +83,15 @@ fn main() -> io::Result<()> {
             let f = std::fs::File::open("hands")?;
             let table = precompute::load_table(f)?;
             search::analyze_difficulty(num_players, table, samples);
+        }
+        Commands::Viz { output, restarts, players, seed } => {
+            let player_counts: Vec<usize> = players
+                .split(',')
+                .map(|s| s.trim().parse().expect("invalid player count"))
+                .collect();
+            let f = std::fs::File::open("hands")?;
+            let table = precompute::load_table(f)?;
+            viz::export(&table, &player_counts, restarts, seed, &output)?;
         }
     }
 

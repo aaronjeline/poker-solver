@@ -167,16 +167,16 @@ mod tests {
         // Player 1 should win with a straight (rank 5) vs Player 0's pair (rank 2)
 
         // Create the cards
-        let card_4c = Card::new(Value::new(4), Suit::Clubs);    // 4♣
+        let card_4c = Card::new(Value::new(4), Suit::Clubs); // 4♣
         let card_3d = Card::new(Value::new(3), Suit::Diamonds); // 3♦
-        let card_7s = Card::new(Value::new(7), Suit::Spades);   // 7♠
-        let card_5c = Card::new(Value::new(5), Suit::Clubs);    // 5♣
-        let card_js = Card::new(Value::new(11), Suit::Spades);  // J♠
+        let card_7s = Card::new(Value::new(7), Suit::Spades); // 7♠
+        let card_5c = Card::new(Value::new(5), Suit::Clubs); // 5♣
+        let card_js = Card::new(Value::new(11), Suit::Spades); // J♠
 
-        let card_kh = Card::new(Value::new(13), Suit::Hearts);  // K♥
+        let card_kh = Card::new(Value::new(13), Suit::Hearts); // K♥
         let card_6d = Card::new(Value::new(6), Suit::Diamonds); // 6♦
 
-        let card_8h = Card::new(Value::new(8), Suit::Hearts);   // 8♥
+        let card_8h = Card::new(Value::new(8), Suit::Hearts); // 8♥
         let card_7d = Card::new(Value::new(7), Suit::Diamonds); // 7♦
 
         // Create players
@@ -200,14 +200,27 @@ mod tests {
         let p0_score = game.players_score(0, &table);
         let p1_score = game.players_score(1, &table);
 
-        println!("Player 0 (8♥, 7♦) score: rank={}, hi={}", p0_score.rank, p0_score.hi);
-        println!("Player 1 (K♥, 6♦) score: rank={}, hi={}", p1_score.rank, p1_score.hi);
+        println!(
+            "Player 0 (8♥, 7♦) score: rank={}, hi={}",
+            p0_score.rank, p0_score.hi
+        );
+        println!(
+            "Player 1 (K♥, 6♦) score: rank={}, hi={}",
+            p1_score.rank, p1_score.hi
+        );
 
         // Verify that player 1 wins
         assert_eq!(p0_score.rank, 2, "Player 0 should have a pair");
         assert_eq!(p1_score.rank, 5, "Player 1 should have a straight");
-        assert!(!game.dealer_wins(&table), "Player 0 (dealer) should NOT win this hand");
-        assert_eq!(game.winning_player(&table), 1, "Player 1 should be the winning player");
+        assert!(
+            !game.dealer_wins(&table),
+            "Player 0 (dealer) should NOT win this hand"
+        );
+        assert_eq!(
+            game.winning_player(&table),
+            1,
+            "Player 1 should be the winning player"
+        );
     }
 
     #[test]
@@ -225,17 +238,17 @@ mod tests {
         // So Player 1 should win!
 
         // Create the cards
-        let card_7h = Card::new(Value::new(7), Suit::Hearts);   // 7♥
-        let card_5c = Card::new(Value::new(5), Suit::Clubs);    // 5♣
-        let card_10c = Card::new(Value::new(10), Suit::Clubs);  // 10♣
-        let card_8c = Card::new(Value::new(8), Suit::Clubs);    // 8♣
-        let card_8h = Card::new(Value::new(8), Suit::Hearts);   // 8♥
+        let card_7h = Card::new(Value::new(7), Suit::Hearts); // 7♥
+        let card_5c = Card::new(Value::new(5), Suit::Clubs); // 5♣
+        let card_10c = Card::new(Value::new(10), Suit::Clubs); // 10♣
+        let card_8c = Card::new(Value::new(8), Suit::Clubs); // 8♣
+        let card_8h = Card::new(Value::new(8), Suit::Hearts); // 8♥
 
-        let card_ac = Card::new(Value::new(1), Suit::Clubs);    // A♣ (Ace = 1)
+        let card_ac = Card::new(Value::new(1), Suit::Clubs); // A♣ (Ace = 1)
         let card_3d = Card::new(Value::new(3), Suit::Diamonds); // 3♦
 
         let card_qd = Card::new(Value::new(12), Suit::Diamonds); // Q♦
-        let card_4s = Card::new(Value::new(4), Suit::Spades);    // 4♠
+        let card_4s = Card::new(Value::new(4), Suit::Spades); // 4♠
 
         // Create players
         let player0 = Player([card_qd, card_4s]);
@@ -258,34 +271,60 @@ mod tests {
         let p0_score = game.players_score(0, &table);
         let p1_score = game.players_score(1, &table);
 
-        println!("Player 0 (Q♦, 4♠) score: rank={}, hi={}", p0_score.rank, p0_score.hi);
-        println!("Player 1 (A♣, 3♦) score: rank={}, hi={}", p1_score.rank, p1_score.hi);
+        println!(
+            "Player 0 (Q♦, 4♠) score: rank={}, hi={}",
+            p0_score.rank, p0_score.hi
+        );
+        println!(
+            "Player 1 (A♣, 3♦) score: rank={}, hi={}",
+            p1_score.rank, p1_score.hi
+        );
 
         // Let me manually check the best hands using the full 7-card hands
         use crate::hands::Hand;
 
         // Player 0 full 7-card hand: Q♦, 4♠ (hole) + 7♥, 5♣, 10♣, 8♣, 8♥ (community)
-        let mut p0_full = [card_qd, card_4s, card_7h, card_5c, card_10c, card_8c, card_8h];
+        let mut p0_full = [
+            card_qd, card_4s, card_7h, card_5c, card_10c, card_8c, card_8h,
+        ];
         p0_full.sort();
         let p0_hand = Hand(p0_full);
         let p0_manual = p0_hand.score();
-        println!("Player 0 manual 7-card: rank={}, hi={}", p0_manual.rank, p0_manual.hi);
+        println!(
+            "Player 0 manual 7-card: rank={}, hi={}",
+            p0_manual.rank, p0_manual.hi
+        );
 
         // Player 1 full 7-card hand: A♣, 3♦ (hole) + 7♥, 5♣, 10♣, 8♣, 8♥ (community)
-        let mut p1_full = [card_ac, card_3d, card_7h, card_5c, card_10c, card_8c, card_8h];
+        let mut p1_full = [
+            card_ac, card_3d, card_7h, card_5c, card_10c, card_8c, card_8h,
+        ];
         p1_full.sort();
-        println!("Player 1 sorted cards: {:?}", p1_full.iter().map(|c| c.into_inner()).collect::<Vec<_>>());
+        println!(
+            "Player 1 sorted cards: {:?}",
+            p1_full.iter().map(|c| c.into_inner()).collect::<Vec<_>>()
+        );
         let p1_hand = Hand(p1_full);
         let p1_manual = p1_hand.score();
-        println!("Player 1 manual 7-card: rank={}, hi={}", p1_manual.rank, p1_manual.hi);
+        println!(
+            "Player 1 manual 7-card: rank={}, hi={}",
+            p1_manual.rank, p1_manual.hi
+        );
 
         // Verify that player 1 wins (both have pair of 8s, but Player 1 has Ace high)
         assert_eq!(p0_score.rank, 2, "Player 0 should have a pair");
         assert_eq!(p1_score.rank, 2, "Player 1 should have a pair");
         assert_eq!(p1_score.hi, 14, "Player 1's high card should be Ace (14)");
         assert_eq!(p0_score.hi, 12, "Player 0's high card should be Queen (12)");
-        assert!(!game.dealer_wins(&table), "Player 0 (dealer) should NOT win this hand");
-        assert_eq!(game.winning_player(&table), 1, "Player 1 should be the winning player");
+        assert!(
+            !game.dealer_wins(&table),
+            "Player 0 (dealer) should NOT win this hand"
+        );
+        assert_eq!(
+            game.winning_player(&table),
+            1,
+            "Player 1 should be the winning player"
+        );
     }
 
     #[test]
@@ -298,37 +337,50 @@ mod tests {
         use crate::hands::Hand;
 
         // Create the cards
-        let card_4c = Card::new(Value::new(4), Suit::Clubs);    // 4♣
+        let card_4c = Card::new(Value::new(4), Suit::Clubs); // 4♣
         let card_3d = Card::new(Value::new(3), Suit::Diamonds); // 3♦
-        let card_7s = Card::new(Value::new(7), Suit::Spades);   // 7♠
-        let card_5c = Card::new(Value::new(5), Suit::Clubs);    // 5♣
-        let card_js = Card::new(Value::new(11), Suit::Spades);  // J♠
+        let card_7s = Card::new(Value::new(7), Suit::Spades); // 7♠
+        let card_5c = Card::new(Value::new(5), Suit::Clubs); // 5♣
+        let card_js = Card::new(Value::new(11), Suit::Spades); // J♠
 
-        let card_kh = Card::new(Value::new(13), Suit::Hearts);  // K♥
+        let card_kh = Card::new(Value::new(13), Suit::Hearts); // K♥
         let card_6d = Card::new(Value::new(6), Suit::Diamonds); // 6♦
 
-        let card_8h = Card::new(Value::new(8), Suit::Hearts);   // 8♥
+        let card_8h = Card::new(Value::new(8), Suit::Hearts); // 8♥
         let card_7d = Card::new(Value::new(7), Suit::Diamonds); // 7♦
 
         // Check Player 1's full 7-card hand: K♥, 6♦ (hole) + 4♣, 3♦, 7♠, 5♣, J♠ (community)
         // This should find the 3-4-5-6-7 straight
-        let mut p1_full = [card_kh, card_6d, card_4c, card_3d, card_7s, card_5c, card_js];
+        let mut p1_full = [
+            card_kh, card_6d, card_4c, card_3d, card_7s, card_5c, card_js,
+        ];
         p1_full.sort(); // Hands must be sorted
         let p1_hand = Hand(p1_full);
         let p1_score = p1_hand.score();
-        println!("Player 1 7-card (has 3-4-5-6-7 straight): rank={}, hi={}", p1_score.rank, p1_score.hi);
+        println!(
+            "Player 1 7-card (has 3-4-5-6-7 straight): rank={}, hi={}",
+            p1_score.rank, p1_score.hi
+        );
 
         // Check Player 0's full 7-card hand: 8♥, 7♦ (hole) + 4♣, 3♦, 7♠, 5♣, J♠ (community)
         // This should find the pair of 7s
-        let mut p0_full = [card_8h, card_7d, card_4c, card_3d, card_7s, card_5c, card_js];
+        let mut p0_full = [
+            card_8h, card_7d, card_4c, card_3d, card_7s, card_5c, card_js,
+        ];
         p0_full.sort(); // Hands must be sorted
         let p0_hand = Hand(p0_full);
         let p0_score = p0_hand.score();
-        println!("Player 0 7-card (has pair of 7s): rank={}, hi={}", p0_score.rank, p0_score.hi);
+        println!(
+            "Player 0 7-card (has pair of 7s): rank={}, hi={}",
+            p0_score.rank, p0_score.hi
+        );
 
         // Straight (rank 5) should beat pair (rank 2)
         assert_eq!(p1_score.rank, 5, "Player 1 should have a straight");
         assert_eq!(p0_score.rank, 2, "Player 0 should have a pair");
-        assert!(p1_score.rank > p0_score.rank, "Player 1's straight should beat Player 0's pair");
+        assert!(
+            p1_score.rank > p0_score.rank,
+            "Player 1's straight should beat Player 0's pair"
+        );
     }
 }
