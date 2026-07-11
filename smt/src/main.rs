@@ -73,217 +73,124 @@ fn is_flush<'ctx>(ctx: &'ctx Context, cards: &[Int<'ctx>; 5]) -> Bool<'ctx> {
     ])
 }
 
-// Check if 5 cards form a straight
-// Returns (is_straight, high_card_value)
-// Handles special case: A-2-3-4-5 (wheel) where A acts as value 0
-fn is_straight<'ctx>(ctx: &'ctx Context, cards: &[Int<'ctx>; 5]) -> (Bool<'ctx>, Int<'ctx>) {
-    let values: Vec<Int> = cards.iter().map(|c| value(ctx, c)).collect();
-
-    // We need to check if the 5 values form a consecutive sequence
-    // This is complex in SMT. We'll check all possible straights.
-    // Straights: 0-1-2-3-4 (wheel, A-2-3-4-5), 1-2-3-4-5, ..., 8-9-10-11-12 (10-J-Q-K-A)
-
-    let mut straight_checks = Vec::new();
-
-    // For each possible straight starting value
-    for start in 0..=8 {
-        // Check if we have exactly these 5 values: start, start+1, start+2, start+3, start+4
-        let expected_vals: Vec<Int> = (0..5)
-            .map(|i| Int::from_i64(ctx, start + i))
-            .collect();
-
-        // Check if values (in any order) match expected_vals
-        let mut matches = Vec::new();
-        for exp_val in &expected_vals {
-            // At least one card must have this value
-            let comparisons: Vec<Bool> = values.iter().map(|v| v._eq(exp_val)).collect();
-            let comparisons_refs: Vec<&Bool> = comparisons.iter().collect();
-            let any_match = Bool::or(ctx, &comparisons_refs);
-            matches.push(any_match);
-        }
-
-        // Also ensure no duplicate values (implicitly satisfied if all 5 expected values are present)
-        let is_this_straight = Bool::and(ctx, &matches.iter().collect::<Vec<_>>());
-
-        straight_checks.push((is_this_straight, Int::from_i64(ctx, start + 4)));
+// Sort 5 values ascending with a fixed 9-comparator sorting network (optimal
+// for n=5 elements). Everything downstream (straight detection, pair
+// pattern, high card) reads off this sorted order instead of re-deriving it
+// with per-value existential searches.
+fn sort5<'ctx>(values: [Int<'ctx>; 5]) -> [Int<'ctx>; 5] {
+    let mut v = values;
+    const NETWORK: [(usize, usize); 9] =
+        [(0, 1), (3, 4), (2, 4), (2, 3), (0, 3), (0, 2), (1, 4), (1, 3), (1, 2)];
+    for &(i, j) in &NETWORK {
+        let le = v[i].le(&v[j]);
+        let lo = le.ite(&v[i], &v[j]);
+        let hi = le.ite(&v[j], &v[i]);
+        v[i] = lo;
+        v[j] = hi;
     }
-
-    // Special case: wheel (A-2-3-4-5) where A=12, but acts as low
-    let wheel_values: Vec<Int> = vec![0, 1, 2, 3, 12].iter()
-        .map(|&v| Int::from_i64(ctx, v))
-        .collect();
-
-    let mut wheel_matches = Vec::new();
-    for exp_val in &wheel_values {
-        let comparisons: Vec<Bool> = values.iter().map(|v| v._eq(exp_val)).collect();
-        let comparisons_refs: Vec<&Bool> = comparisons.iter().collect();
-        let any_match = Bool::or(ctx, &comparisons_refs);
-        wheel_matches.push(any_match);
-    }
-    let is_wheel = Bool::and(ctx, &wheel_matches.iter().collect::<Vec<_>>());
-
-    // High card for wheel is 3 (value=3, which is the card '5')
-    straight_checks.push((is_wheel, Int::from_i64(ctx, 3)));
-
-    // Combine all checks: is any straight true?
-    let is_any_straight = Bool::or(ctx, &straight_checks.iter().map(|(c, _)| c).collect::<Vec<_>>());
-
-    // Determine high card: use conditional selection
-    let mut high_card = Int::from_i64(ctx, 0);
-    for (i, (check, hc)) in straight_checks.iter().enumerate() {
-        if i == 0 {
-            high_card = check.ite(hc, &high_card);
-        } else {
-            high_card = check.ite(hc, &high_card);
-        }
-    }
-
-    (is_any_straight, high_card)
+    v
 }
 
-// Count occurrences of each value (0-12) in the 5 cards
-// Returns: (count array indices 0-12, sorted counts in descending order)
-fn count_values<'ctx>(ctx: &'ctx Context, cards: &[Int<'ctx>; 5]) -> (Vec<Int<'ctx>>, Vec<Int<'ctx>>) {
-    let values: Vec<Int> = cards.iter().map(|c| value(ctx, c)).collect();
-
-    // For each value 0-12, count how many cards have it
-    let mut counts = Vec::new();
-    for val_id in 0..13 {
-        let target = Int::from_i64(ctx, val_id);
-        let mut count = Int::from_i64(ctx, 0);
-        for v in &values {
-            // count += (v == target) ? 1 : 0
-            count = v._eq(&target).ite(&(count.clone() + Int::from_i64(ctx, 1)), &count);
-        }
-        counts.push(count);
-    }
-
-    // Extract unique counts and sort them (descending)
-    // This is complex in SMT, so we'll do it manually for all 5 cards
-    // Possible count patterns: [4,1], [3,2], [3,1,1], [2,2,1], [2,1,1,1], [1,1,1,1,1]
-
-    // We would need to sort values by their counts (descending), then by value
-    // but sorting in SMT is hard, so we skip this and use simplified tiebreakers
-    let sorted_counts = values.iter()
-        .map(|v| {
-            let mut c = Int::from_i64(ctx, 0);
-            for other_v in &values {
-                c = v._eq(other_v).ite(&(c.clone() + Int::from_i64(ctx, 1)), &c);
-            }
-            c
-        })
-        .collect();
-
-    (counts, sorted_counts)
-}
-
-// Determine hand rank and tiebreakers for 5 cards
-// Returns: (rank, tiebreaker1, tiebreaker2, tiebreaker3, tiebreaker4, tiebreaker5)
-// rank: 0=high card, 1=pair, 2=two pair, 3=three of a kind, 4=straight,
-//       5=flush, 6=full house, 7=four of a kind, 8=straight flush
-fn hand_rank<'ctx>(
-    ctx: &'ctx Context,
-    cards: &[Int<'ctx>; 5],
-) -> (Int<'ctx>, Vec<Int<'ctx>>) {
-    let values: Vec<Int> = cards.iter().map(|c| value(ctx, c)).collect();
-
+// Determine hand rank + high-card tiebreaker for 5 cards, matching the
+// simplified (rank, high_card) scoring the rest of this project uses (see
+// ../src/hands.rs::score_five_cards) so a solution found here means the same
+// thing as a win anywhere else in the codebase. Returned as a single
+// comparable integer: rank * 100 + high_card.
+//
+// Once the 5 values are sorted, equal values are necessarily contiguous, so
+// the entire pair/two-pair/trips/full-house/quad pattern is determined by
+// just the 4 adjacent-equality booleans — no per-value counting sweep
+// needed. Straight and flush can only occur when all 5 values are distinct
+// (a repeated value rules out 5 consecutive values, and a repeated suit
+// would require a repeated (suit, value) card, which the deck's global
+// distinctness constraint rules out), so the pair-pattern ranks and the
+// straight/flush ranks never collide and can be layered without the
+// "and not X" guards the old code needed to avoid clobbering straight
+// flushes.
+fn hand_score<'ctx>(ctx: &'ctx Context, cards: &[Int<'ctx>; 5]) -> Int<'ctx> {
+    let raw_values: [Int; 5] = std::array::from_fn(|i| value(ctx, &cards[i]));
+    let v = sort5(raw_values);
     let is_flush_val = is_flush(ctx, cards);
-    let (is_straight_val, _straight_high) = is_straight(ctx, cards);
-    let (value_counts, _) = count_values(ctx, cards);
 
-    // Count how many of each count we have
-    let four_checks: Vec<Bool> = value_counts.iter().map(|c| c._eq(&Int::from_i64(ctx, 4))).collect();
-    let four_refs: Vec<&Bool> = four_checks.iter().collect();
-    let has_four = Bool::or(ctx, &four_refs);
+    let e01 = v[0]._eq(&v[1]);
+    let e12 = v[1]._eq(&v[2]);
+    let e23 = v[2]._eq(&v[3]);
+    let e34 = v[3]._eq(&v[4]);
 
-    let three_checks: Vec<Bool> = value_counts.iter().map(|c| c._eq(&Int::from_i64(ctx, 3))).collect();
-    let three_refs: Vec<&Bool> = three_checks.iter().collect();
-    let has_three = Bool::or(ctx, &three_refs);
+    let quad = Bool::or(ctx, &[
+        &Bool::and(ctx, &[&e12, &e23, &e34, &e01.not()]),
+        &Bool::and(ctx, &[&e01, &e12, &e23, &e34.not()]),
+    ]);
+    let full_house = Bool::or(ctx, &[
+        &Bool::and(ctx, &[&e01, &e23, &e34, &e12.not()]),
+        &Bool::and(ctx, &[&e01, &e12, &e34, &e23.not()]),
+    ]);
+    let trips = Bool::or(ctx, &[
+        &Bool::and(ctx, &[&e01, &e12, &e23.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e12, &e23, &e01.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e23, &e34, &e01.not(), &e12.not()]),
+    ]);
+    let two_pair = Bool::or(ctx, &[
+        &Bool::and(ctx, &[&e01, &e23, &e12.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e01, &e34, &e12.not(), &e23.not()]),
+        &Bool::and(ctx, &[&e12, &e34, &e01.not(), &e23.not()]),
+    ]);
+    let one_pair = Bool::or(ctx, &[
+        &Bool::and(ctx, &[&e01, &e12.not(), &e23.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e12, &e01.not(), &e23.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e23, &e01.not(), &e12.not(), &e34.not()]),
+        &Bool::and(ctx, &[&e34, &e01.not(), &e12.not(), &e23.not()]),
+    ]);
 
-    // Count pairs
-    let mut num_pairs = Int::from_i64(ctx, 0);
-    for c in &value_counts {
-        num_pairs = c._eq(&Int::from_i64(ctx, 2)).ite(
-            &(num_pairs.clone() + Int::from_i64(ctx, 1)),
-            &num_pairs
-        );
-    }
-    let has_one_pair = num_pairs.clone()._eq(&Int::from_i64(ctx, 1));
-    let has_two_pair = num_pairs._eq(&Int::from_i64(ctx, 2));
+    let is_wheel = Bool::and(ctx, &[
+        &v[0]._eq(&Int::from_i64(ctx, 0)),
+        &v[1]._eq(&Int::from_i64(ctx, 1)),
+        &v[2]._eq(&Int::from_i64(ctx, 2)),
+        &v[3]._eq(&Int::from_i64(ctx, 3)),
+        &v[4]._eq(&Int::from_i64(ctx, 12)),
+    ]);
+    let is_straight_val = Bool::or(ctx, &[
+        &is_wheel,
+        &Bool::and(ctx, &[
+            &v[1]._eq(&(v[0].clone() + Int::from_i64(ctx, 1))),
+            &v[2]._eq(&(v[1].clone() + Int::from_i64(ctx, 1))),
+            &v[3]._eq(&(v[2].clone() + Int::from_i64(ctx, 1))),
+            &v[4]._eq(&(v[3].clone() + Int::from_i64(ctx, 1))),
+        ]),
+    ]);
 
-    let is_full_house = Bool::and(ctx, &[&has_three, &has_one_pair]);
+    let mut rank = Int::from_i64(ctx, 0); // default: high card
+    rank = one_pair.ite(&Int::from_i64(ctx, 1), &rank);
+    rank = two_pair.ite(&Int::from_i64(ctx, 2), &rank);
+    rank = trips.ite(&Int::from_i64(ctx, 3), &rank);
+    rank = full_house.ite(&Int::from_i64(ctx, 6), &rank);
+    rank = quad.ite(&Int::from_i64(ctx, 7), &rank);
+    rank = is_straight_val.ite(&Int::from_i64(ctx, 4), &rank);
+    rank = is_flush_val.ite(&Int::from_i64(ctx, 5), &rank);
+    rank = Bool::and(ctx, &[&is_straight_val, &is_flush_val]).ite(&Int::from_i64(ctx, 8), &rank);
 
-    // Determine rank
-    let mut rank = Int::from_i64(ctx, 0); // Default: high card
+    // High card tiebreaker, matching hands.rs::score_five_cards exactly: an
+    // ace counts as 14 unless it's completing the wheel, where the "5"
+    // (v[3], since the ace sorts to the top as value 12 in this encoding)
+    // is the effective high card.
+    let has_ace = v[4]._eq(&Int::from_i64(ctx, 12));
+    let hi = is_wheel.ite(
+        &Int::from_i64(ctx, 5),
+        &has_ace.ite(&Int::from_i64(ctx, 14), &(v[4].clone() + Int::from_i64(ctx, 2))),
+    );
 
-    // Straight flush (8)
-    rank = Bool::and(ctx, &[&is_flush_val, &is_straight_val]).ite(&Int::from_i64(ctx, 8), &rank);
-
-    // Four of a kind (7)
-    rank = has_four.ite(&Int::from_i64(ctx, 7), &rank);
-
-    // Full house (6)
-    rank = is_full_house.ite(&Int::from_i64(ctx, 6), &rank);
-
-    // Flush (5)
-    rank = Bool::and(ctx, &[&is_flush_val, &is_straight_val.not()]).ite(&Int::from_i64(ctx, 5), &rank);
-
-    // Straight (4)
-    rank = Bool::and(ctx, &[&is_straight_val, &is_flush_val.not()]).ite(&Int::from_i64(ctx, 4), &rank);
-
-    // Three of a kind (3)
-    rank = Bool::and(ctx, &[&has_three, &has_one_pair.not()]).ite(&Int::from_i64(ctx, 3), &rank);
-
-    // Two pair (2)
-    rank = has_two_pair.ite(&Int::from_i64(ctx, 2), &rank);
-
-    // One pair (1)
-    rank = has_one_pair.ite(&Int::from_i64(ctx, 1), &rank);
-
-    // Tiebreakers: for simplicity, we'll use sorted values in descending order
-    // This isn't perfect (should prioritize by count pattern) but is a simplification
-    // A proper implementation would sort them by (count, value) descending
-    let tiebreakers = values;
-
-    (rank, tiebreakers)
+    rank * Int::from_i64(ctx, 100) + hi
 }
 
-// Compare two hands: returns true if hand1 > hand2
-fn hand_greater_than<'ctx>(
-    ctx: &'ctx Context,
-    rank1: &Int<'ctx>,
-    tb1: &[Int<'ctx>],
-    rank2: &Int<'ctx>,
-    tb2: &[Int<'ctx>],
-) -> Bool<'ctx> {
-    // First compare ranks
-    let rank_greater = rank1.gt(rank2);
-    let rank_equal = rank1._eq(rank2);
-
-    // If ranks equal, compare tiebreakers lexicographically
-    let mut tb_greater = Bool::from_bool(ctx, false);
-    let mut all_equal = Bool::from_bool(ctx, true);
-
-    for i in 0..tb1.len().min(tb2.len()) {
-        let this_greater = tb1[i].gt(&tb2[i]);
-        let this_equal = tb1[i]._eq(&tb2[i]);
-
-        // tb_greater = this_greater || (all_equal && this_greater)
-        tb_greater = Bool::or(ctx, &[&tb_greater, &Bool::and(ctx, &[&all_equal, &this_greater])]);
-
-        all_equal = Bool::and(ctx, &[&all_equal, &this_equal]);
-    }
-
-    Bool::or(ctx, &[&rank_greater, &Bool::and(ctx, &[&rank_equal, &tb_greater])])
-}
-
-// Get the best hand from 7 cards (2 hole + 5 community)
-// Returns: (rank, tiebreakers)
+// Get the best hand from 7 cards (2 hole + 5 community): the max hand_score
+// over all C(7,5) = 21 combinations. Because hand_score is already a single
+// comparable integer, the running-best update is one comparison instead of
+// a 6-field (rank + 5 tiebreakers) lexicographic compare.
 fn best_hand_from_seven<'ctx>(
     ctx: &'ctx Context,
     hole_cards: &[Int<'ctx>; 2],
     community: &[Int<'ctx>; 5],
-) -> (Int<'ctx>, Vec<Int<'ctx>>) {
+) -> Int<'ctx> {
     // All C(7,5) = 21 combinations
     let all_cards = [
         hole_cards[0].clone(),
@@ -295,8 +202,7 @@ fn best_hand_from_seven<'ctx>(
         community[4].clone(),
     ];
 
-    // Generate all 21 combinations of 5 cards from 7
-    let combinations: Vec<[usize; 5]> = vec![
+    let combinations: [[usize; 5]; 21] = [
         [0,1,2,3,4], [0,1,2,3,5], [0,1,2,3,6], [0,1,2,4,5], [0,1,2,4,6],
         [0,1,2,5,6], [0,1,3,4,5], [0,1,3,4,6], [0,1,3,5,6], [0,1,4,5,6],
         [0,2,3,4,5], [0,2,3,4,6], [0,2,3,5,6], [0,2,4,5,6], [0,3,4,5,6],
@@ -304,9 +210,7 @@ fn best_hand_from_seven<'ctx>(
         [2,3,4,5,6],
     ];
 
-    let mut best_rank = Int::from_i64(ctx, -1);
-    let mut best_tiebreakers = vec![Int::from_i64(ctx, 0); 5];
-
+    let mut best = Int::from_i64(ctx, -1);
     for combo in combinations {
         let hand = [
             all_cards[combo[0]].clone(),
@@ -315,19 +219,10 @@ fn best_hand_from_seven<'ctx>(
             all_cards[combo[3]].clone(),
             all_cards[combo[4]].clone(),
         ];
-
-        let (rank, tiebreakers) = hand_rank(ctx, &hand);
-
-        // Update best if this is better
-        let is_better = hand_greater_than(ctx, &rank, &tiebreakers, &best_rank, &best_tiebreakers);
-
-        best_rank = is_better.ite(&rank, &best_rank);
-        for i in 0..5 {
-            best_tiebreakers[i] = is_better.ite(&tiebreakers[i], &best_tiebreakers[i]);
-        }
+        let score = hand_score(ctx, &hand);
+        best = score.gt(&best).ite(&score, &best);
     }
-
-    (best_rank, best_tiebreakers)
+    best
 }
 
 fn main() {
@@ -402,23 +297,14 @@ fn main() {
             cut_deck[2 * n + 4].clone(),
         ];
 
-        // Get best hand for each player
-        let mut player_best_hands = Vec::new();
-        for p in 0..n {
-            let (rank, tiebreakers) = best_hand_from_seven(&ctx, &player_hands[p], &community);
-            player_best_hands.push((rank, tiebreakers));
-        }
+        // Get best hand score for each player
+        let player_best_hands: Vec<Int> = (0..n)
+            .map(|p| best_hand_from_seven(&ctx, &player_hands[p], &community))
+            .collect();
 
         // Constraint: player 0 must win (beat all other players)
         for p in 1..n {
-            let player0_better = hand_greater_than(
-                &ctx,
-                &player_best_hands[0].0,
-                &player_best_hands[0].1,
-                &player_best_hands[p].0,
-                &player_best_hands[p].1,
-            );
-            solver.assert(&player0_better);
+            solver.assert(&player_best_hands[0].gt(&player_best_hands[p]));
         }
     }
 
