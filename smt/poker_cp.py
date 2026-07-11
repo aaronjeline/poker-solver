@@ -2,8 +2,15 @@
 """
 Poker Deck Optimization using Google OR-Tools CP-SAT Solver
 
-Finds a deck ordering where player 0 wins at all cut positions.
-Uses constraint programming instead of SMT for better performance.
+Finds the deck ordering that maximizes the number of cut positions at which
+player 0 (the dealer) wins, using constraint programming.
+
+Framed as a Maximize objective rather than a single feasibility check: even
+under a timeout, CP-SAT reports the best deck found so far plus a proven
+upper bound on how good any deck could possibly be. If the optimal is proven
+equal to num_cuts, a perfect deck exists (and this is it). If the optimal is
+proven less than num_cuts, no perfect deck exists -- and you still get the
+best achievable deck instead of a bare "infeasible".
 """
 
 import argparse
@@ -41,375 +48,245 @@ class PokerCPSolver:
         print("Adding permutation constraint...")
         self.model.AddAllDifferent(self.deck)
 
+    def apply_hint(self, hint_deck):
+        """Seed the search with a known-good deck (e.g. from the heuristic
+        search or a previous solve), via CP-SAT's solution hint mechanism."""
+        assert len(hint_deck) == 52, "hint deck must have exactly 52 cards"
+        for card_var, val in zip(self.deck, hint_deck):
+            self.model.AddHint(card_var, val)
+
+    # -- reification helpers -------------------------------------------------
+    # CP-SAT booleans built from `.OnlyEnforceIf(x)` alone only constrain the
+    # forward direction (x==True implies the condition holds); nothing stops
+    # the solver from setting x=False even when the condition is genuinely
+    # true unless the reverse direction is *also* asserted. Every boolean
+    # built below is fully (iff) reified, both directions, so the solver can
+    # never just "opt out" of reporting a flush/straight/pair it doesn't like.
+
+    def reify_eq(self, a, b):
+        """BoolVar r with r <=> (a == b)."""
+        r = self.model.NewBoolVar('')
+        self.model.Add(a == b).OnlyEnforceIf(r)
+        self.model.Add(a != b).OnlyEnforceIf(r.Not())
+        return r
+
+    def reify_and(self, bools):
+        """BoolVar r with r <=> AND(bools)."""
+        r = self.model.NewBoolVar('')
+        self.model.AddBoolAnd(bools).OnlyEnforceIf(r)
+        self.model.AddBoolOr([b.Not() for b in bools]).OnlyEnforceIf(r.Not())
+        return r
+
+    def reify_or(self, bools):
+        """BoolVar r with r <=> OR(bools)."""
+        r = self.model.NewBoolVar('')
+        self.model.AddBoolOr(bools).OnlyEnforceIf(r)
+        self.model.AddBoolAnd([b.Not() for b in bools]).OnlyEnforceIf(r.Not())
+        return r
+
     def extract_card_properties(self, card_var):
         """
         Extract suit and value from a card variable.
-        Returns (suit_var, value_var) where:
-        - suit = card // 13
-        - value = card % 13
+        suit = card // 13, value = card % 13. This is a plain equality
+        (suit*13 + value == card, with suit in 0..3 and value in 0..12), so
+        it's a complete, sound definition -- no reification needed.
         """
         suit = self.model.NewIntVar(0, 3, '')
         value = self.model.NewIntVar(0, 12, '')
-
-        # suit * 13 + value = card
         self.model.Add(card_var == suit * 13 + value)
-
         return suit, value
 
-    def is_flush(self, cards):
+    def sort5(self, values):
         """
-        Check if 5 cards form a flush (all same suit).
-        Returns a boolean variable.
+        Sort 5 IntVars ascending with a fixed 9-comparator sorting network
+        (optimal for n=5), using AddMinEquality/AddMaxEquality -- native,
+        fully-constrained global constraints -- for each compare-exchange.
+        Everything downstream (straight detection, pair pattern, high card)
+        reads off this sorted order instead of a per-value existential
+        search.
         """
+        v = list(values)
+        network = [(0, 1), (3, 4), (2, 4), (2, 3), (0, 3), (0, 2), (1, 4), (1, 3), (1, 2)]
+        for (i, j) in network:
+            lo = self.model.NewIntVar(0, 12, '')
+            hi = self.model.NewIntVar(0, 12, '')
+            self.model.AddMinEquality(lo, [v[i], v[j]])
+            self.model.AddMaxEquality(hi, [v[i], v[j]])
+            v[i], v[j] = lo, hi
+        return v
+
+    def hand_score(self, cards):
+        """
+        Score a 5-card hand as a single comparable integer: rank * 100 + hi,
+        matching the simplified (rank, high_card) scoring the rest of this
+        project uses (see ../src/hands.rs::score_five_cards) so a solution
+        found here means the same thing as a win anywhere else in the
+        codebase.
+
+        Once the 5 values are sorted, equal values are necessarily
+        contiguous, so the whole pair/two-pair/trips/full-house/quad pattern
+        is determined by just the 4 adjacent-equality booleans. Straight and
+        flush can only occur when all 5 values are distinct (a repeated
+        value rules out 5 consecutive values, and a repeated suit would
+        require a repeated (suit, value) card, which AllDifferent on the
+        deck rules out), so the pair-pattern ranks and the straight/flush
+        ranks never collide -- both families can be summed directly as
+        mutually-exclusive weighted booleans, no priority cascade needed.
+        """
+        values = [self.extract_card_properties(c)[1] for c in cards]
         suits = [self.extract_card_properties(c)[0] for c in cards]
+        v = self.sort5(values)
 
-        # All suits must be equal
-        flush_var = self.model.NewBoolVar('')
+        e01 = self.reify_eq(v[0], v[1])
+        e12 = self.reify_eq(v[1], v[2])
+        e23 = self.reify_eq(v[2], v[3])
+        e34 = self.reify_eq(v[3], v[4])
+        n01, n12, n23, n34 = e01.Not(), e12.Not(), e23.Not(), e34.Not()
 
-        # flush_var == (s0 == s1 == s2 == s3 == s4)
-        for i in range(1, 5):
-            same = self.model.NewBoolVar('')
-            self.model.Add(suits[0] == suits[i]).OnlyEnforceIf(same)
-            self.model.Add(suits[0] != suits[i]).OnlyEnforceIf(same.Not())
-            # All must be the same
-            self.model.AddImplication(flush_var, same)
+        is_flush = self.reify_and([
+            self.reify_eq(suits[0], suits[1]),
+            self.reify_eq(suits[0], suits[2]),
+            self.reify_eq(suits[0], suits[3]),
+            self.reify_eq(suits[0], suits[4]),
+        ])
 
-        return flush_var
+        quad = self.reify_or([
+            self.reify_and([e12, e23, e34, n01]),
+            self.reify_and([e01, e12, e23, n34]),
+        ])
+        full_house = self.reify_or([
+            self.reify_and([e01, e23, e34, n12]),
+            self.reify_and([e01, e12, e34, n23]),
+        ])
+        trips = self.reify_or([
+            self.reify_and([e01, e12, n23, n34]),
+            self.reify_and([e12, e23, n01, n34]),
+            self.reify_and([e23, e34, n01, n12]),
+        ])
+        two_pair = self.reify_or([
+            self.reify_and([e01, e23, n12, n34]),
+            self.reify_and([e01, e34, n12, n23]),
+            self.reify_and([e12, e34, n01, n23]),
+        ])
+        one_pair = self.reify_or([
+            self.reify_and([e01, n12, n23, n34]),
+            self.reify_and([e12, n01, n23, n34]),
+            self.reify_and([e23, n01, n12, n34]),
+            self.reify_and([e34, n01, n12, n23]),
+        ])
 
-    def is_straight(self, cards):
-        """
-        Check if 5 cards form a straight.
-        Returns a boolean variable.
+        is_wheel = self.reify_and([
+            self.reify_eq(v[0], 0),
+            self.reify_eq(v[1], 1),
+            self.reify_eq(v[2], 2),
+            self.reify_eq(v[3], 3),
+            self.reify_eq(v[4], 12),
+        ])
+        consecutive = self.reify_and([
+            self.reify_eq(v[1], v[0] + 1),
+            self.reify_eq(v[2], v[1] + 1),
+            self.reify_eq(v[3], v[2] + 1),
+            self.reify_eq(v[4], v[3] + 1),
+        ])
+        is_straight = self.reify_or([is_wheel, consecutive])
 
-        This is complex - we check if values form one of the valid straights:
-        - Regular: 0-1-2-3-4, 1-2-3-4-5, ..., 8-9-10-11-12
-        - Wheel: A-2-3-4-5 (values 12,0,1,2,3)
-        """
-        values = [self.extract_card_properties(c)[1] for c in cards]
+        straight_only = self.reify_and([is_straight, is_flush.Not()])
+        flush_only = self.reify_and([is_flush, is_straight.Not()])
+        straight_flush = self.reify_and([is_straight, is_flush])
 
-        straight_var = self.model.NewBoolVar('')
-
-        # For simplicity in CP-SAT, we'll check each possible straight
-        possible_straights = []
-
-        # Regular straights: 0-4, 1-5, 2-6, ..., 8-12
-        for start in range(9):
-            expected = list(range(start, start + 5))
-            is_this_straight = self.check_values_match_set(values, expected)
-            possible_straights.append(is_this_straight)
-
-        # Wheel: A-2-3-4-5 (values 0,1,2,3,12)
-        wheel = self.check_values_match_set(values, [0, 1, 2, 3, 12])
-        possible_straights.append(wheel)
-
-        # straight_var is true if any of the possible straights is true
-        self.model.AddBoolOr(possible_straights).OnlyEnforceIf(straight_var)
-        self.model.AddBoolAnd([s.Not() for s in possible_straights]).OnlyEnforceIf(straight_var.Not())
-
-        return straight_var
-
-    def check_values_match_set(self, values, expected_set):
-        """
-        Check if the 5 values (in any order) exactly match expected_set.
-        Returns a boolean variable.
-        """
-        match_var = self.model.NewBoolVar('')
-
-        # For each expected value, at least one card must have it
-        # And for each card value, it must be in expected_set
-
-        for exp_val in expected_set:
-            # At least one value equals exp_val
-            has_value_bools = []
-            for v in values:
-                b = self.model.NewBoolVar('')
-                self.model.Add(v == exp_val).OnlyEnforceIf(b)
-                self.model.Add(v != exp_val).OnlyEnforceIf(b.Not())
-                has_value_bools.append(b)
-
-            # If match_var is true, then at least one of these must be true
-            self.model.AddBoolOr(has_value_bools).OnlyEnforceIf(match_var)
-
-        # Also ensure each value is in the expected set
-        for v in values:
-            # v must be one of expected_set values
-            in_set_bools = []
-            for exp_val in expected_set:
-                b = self.model.NewBoolVar('')
-                self.model.Add(v == exp_val).OnlyEnforceIf(b)
-                self.model.Add(v != exp_val).OnlyEnforceIf(b.Not())
-                in_set_bools.append(b)
-
-            # If match_var is true, v must be in the set
-            self.model.AddBoolOr(in_set_bools).OnlyEnforceIf(match_var)
-
-        return match_var
-
-    def count_value_occurrences(self, cards):
-        """
-        Count how many times each value (0-12) appears in the 5 cards.
-        Returns a list of 13 count variables.
-        """
-        values = [self.extract_card_properties(c)[1] for c in cards]
-        counts = []
-
-        for target_val in range(13):
-            count = self.model.NewIntVar(0, 5, '')
-
-            # count = number of values that equal target_val
-            is_equal = []
-            for v in values:
-                b = self.model.NewBoolVar('')
-                self.model.Add(v == target_val).OnlyEnforceIf(b)
-                self.model.Add(v != target_val).OnlyEnforceIf(b.Not())
-                is_equal.append(b)
-
-            # Sum the boolean variables
-            self.model.Add(count == sum(is_equal))
-            counts.append(count)
-
-        return counts
-
-    def compute_hand_rank(self, cards):
-        """
-        Compute poker hand rank for 5 cards.
-        Returns rank variable (0-8):
-        0=high card, 1=pair, 2=two pair, 3=three of a kind, 4=straight,
-        5=flush, 6=full house, 7=four of a kind, 8=straight flush
-
-        Also returns tiebreaker variables for comparison.
-        """
-        values = [self.extract_card_properties(c)[1] for c in cards]
-
-        is_flush_var = self.is_flush(cards)
-        is_straight_var = self.is_straight(cards)
-        value_counts = self.count_value_occurrences(cards)
-
-        # Detect hand patterns
-        has_four = self.model.NewBoolVar('')
-        has_three = self.model.NewBoolVar('')
-        num_pairs = self.model.NewIntVar(0, 2, '')
-
-        # has_four: at least one count == 4
-        four_bools = []
-        for c in value_counts:
-            b = self.model.NewBoolVar('')
-            self.model.Add(c == 4).OnlyEnforceIf(b)
-            self.model.Add(c != 4).OnlyEnforceIf(b.Not())
-            four_bools.append(b)
-        self.model.AddBoolOr(four_bools).OnlyEnforceIf(has_four)
-        self.model.AddBoolAnd([b.Not() for b in four_bools]).OnlyEnforceIf(has_four.Not())
-
-        # has_three: at least one count == 3
-        three_bools = []
-        for c in value_counts:
-            b = self.model.NewBoolVar('')
-            self.model.Add(c == 3).OnlyEnforceIf(b)
-            self.model.Add(c != 3).OnlyEnforceIf(b.Not())
-            three_bools.append(b)
-        self.model.AddBoolOr(three_bools).OnlyEnforceIf(has_three)
-        self.model.AddBoolAnd([b.Not() for b in three_bools]).OnlyEnforceIf(has_three.Not())
-
-        # num_pairs: count how many values have count == 2
-        pair_bools = []
-        for c in value_counts:
-            b = self.model.NewBoolVar('')
-            self.model.Add(c == 2).OnlyEnforceIf(b)
-            self.model.Add(c != 2).OnlyEnforceIf(b.Not())
-            pair_bools.append(b)
-        self.model.Add(num_pairs == sum(pair_bools))
-
-        # Determine rank
         rank = self.model.NewIntVar(0, 8, '')
+        self.model.Add(
+            rank == 1 * one_pair + 2 * two_pair + 3 * trips + 6 * full_house + 7 * quad
+            + 4 * straight_only + 5 * flush_only + 8 * straight_flush
+        )
 
-        # Create boolean for each rank type
-        is_straight_flush = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([is_flush_var, is_straight_var]).OnlyEnforceIf(is_straight_flush)
-        self.model.AddBoolOr([is_flush_var.Not(), is_straight_var.Not()]).OnlyEnforceIf(is_straight_flush.Not())
+        # High card tiebreaker, matching hands.rs::score_five_cards exactly:
+        # an ace counts as 14 unless it's completing the wheel, where the
+        # "5" (v[3]) is the effective high card. These three cases are
+        # mutually exclusive and exhaustive, so pinning hi with three
+        # OnlyEnforceIf branches is sound (exactly one always fires).
+        has_ace = self.reify_eq(v[4], 12)
+        ace_not_wheel = self.reify_and([has_ace, is_wheel.Not()])
+        not_ace = has_ace.Not()
 
-        is_four_kind = has_four
+        hi = self.model.NewIntVar(2, 14, '')
+        self.model.Add(hi == 5).OnlyEnforceIf(is_wheel)
+        self.model.Add(hi == 14).OnlyEnforceIf(ace_not_wheel)
+        self.model.Add(hi == v[4] + 2).OnlyEnforceIf(not_ace)
 
-        # Create boolean for num_pairs == 1
-        num_pairs_is_one = self.model.NewBoolVar('')
-        self.model.Add(num_pairs == 1).OnlyEnforceIf(num_pairs_is_one)
-        self.model.Add(num_pairs != 1).OnlyEnforceIf(num_pairs_is_one.Not())
-
-        # Create boolean for num_pairs == 2
-        num_pairs_is_two = self.model.NewBoolVar('')
-        self.model.Add(num_pairs == 2).OnlyEnforceIf(num_pairs_is_two)
-        self.model.Add(num_pairs != 2).OnlyEnforceIf(num_pairs_is_two.Not())
-
-        is_full_house = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([has_three, num_pairs_is_one]).OnlyEnforceIf(is_full_house)
-        self.model.AddBoolOr([has_three.Not(), num_pairs_is_one.Not()]).OnlyEnforceIf(is_full_house.Not())
-
-        is_flush_only = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([is_flush_var, is_straight_var.Not()]).OnlyEnforceIf(is_flush_only)
-        self.model.AddBoolOr([is_flush_var.Not(), is_straight_var]).OnlyEnforceIf(is_flush_only.Not())
-
-        is_straight_only = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([is_straight_var, is_flush_var.Not()]).OnlyEnforceIf(is_straight_only)
-        self.model.AddBoolOr([is_straight_var.Not(), is_flush_var]).OnlyEnforceIf(is_straight_only.Not())
-
-        is_three_kind = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([has_three, num_pairs_is_one.Not()]).OnlyEnforceIf(is_three_kind)
-        self.model.AddBoolOr([has_three.Not(), num_pairs_is_one]).OnlyEnforceIf(is_three_kind.Not())
-
-        is_two_pair = num_pairs_is_two
-
-        is_one_pair = num_pairs_is_one
-
-        # Determine rank based on hand type (in priority order from highest to lowest)
-        # We'll use a cascading if-then-else approach
-
-        # Start with rank 0 (high card) as default
-        # Then check each hand type in descending order and set rank accordingly
-
-        # Using OnlyEnforceIf constraints to map boolean hand types to rank values
-        self.model.Add(rank == 8).OnlyEnforceIf(is_straight_flush)
-        self.model.Add(rank == 7).OnlyEnforceIf([is_four_kind, is_straight_flush.Not()])
-        self.model.Add(rank == 6).OnlyEnforceIf([is_full_house, is_straight_flush.Not(), is_four_kind.Not()])
-        self.model.Add(rank == 5).OnlyEnforceIf([is_flush_only, is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not()])
-        self.model.Add(rank == 4).OnlyEnforceIf([is_straight_only, is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not(), is_flush_only.Not()])
-        self.model.Add(rank == 3).OnlyEnforceIf([is_three_kind, is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not(), is_flush_only.Not(), is_straight_only.Not()])
-        self.model.Add(rank == 2).OnlyEnforceIf([is_two_pair, is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not(), is_flush_only.Not(), is_straight_only.Not(), is_three_kind.Not()])
-        self.model.Add(rank == 1).OnlyEnforceIf([is_one_pair, is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not(), is_flush_only.Not(), is_straight_only.Not(), is_three_kind.Not(), is_two_pair.Not()])
-        # High card: none of the above hand types
-        is_high_card = self.model.NewBoolVar('')
-        self.model.AddBoolOr([is_straight_flush, is_four_kind, is_full_house, is_flush_only,
-                              is_straight_only, is_three_kind, is_two_pair, is_one_pair]).OnlyEnforceIf(is_high_card.Not())
-        self.model.AddBoolAnd([is_straight_flush.Not(), is_four_kind.Not(), is_full_house.Not(),
-                               is_flush_only.Not(), is_straight_only.Not(), is_three_kind.Not(),
-                               is_two_pair.Not(), is_one_pair.Not()]).OnlyEnforceIf(is_high_card)
-
-        self.model.Add(rank == 0).OnlyEnforceIf(is_high_card)
-
-        # Ensure exactly one hand type is active
-        self.model.AddExactlyOne([is_straight_flush, is_four_kind, is_full_house, is_flush_only,
-                                  is_straight_only, is_three_kind, is_two_pair, is_one_pair, is_high_card])
-
-        # Simplified tiebreakers: just use the values sorted descending
-        # A proper implementation would sort by count pattern
-        tiebreakers = values  # Simplified
-
-        return rank, tiebreakers
-
-    def hand_is_better(self, rank1, tb1, rank2, tb2):
-        """
-        Return a boolean variable that is true if hand1 > hand2.
-        Comparison: first by rank, then by tiebreakers lexicographically.
-        """
-        is_better = self.model.NewBoolVar('')
-
-        # rank1 > rank2 OR (rank1 == rank2 AND tb1 > tb2)
-        rank_greater = self.model.NewBoolVar('')
-        self.model.Add(rank1 > rank2).OnlyEnforceIf(rank_greater)
-        self.model.Add(rank1 <= rank2).OnlyEnforceIf(rank_greater.Not())
-
-        rank_equal = self.model.NewBoolVar('')
-        self.model.Add(rank1 == rank2).OnlyEnforceIf(rank_equal)
-        self.model.Add(rank1 != rank2).OnlyEnforceIf(rank_equal.Not())
-
-        # Tiebreaker comparison (lexicographic on first value for simplicity)
-        tb_greater = self.model.NewBoolVar('')
-        if len(tb1) > 0 and len(tb2) > 0:
-            # Compare first tiebreaker (simplified - should be all 5)
-            self.model.Add(tb1[0] > tb2[0]).OnlyEnforceIf(tb_greater)
-            self.model.Add(tb1[0] <= tb2[0]).OnlyEnforceIf(tb_greater.Not())
-
-        # is_better = rank_greater OR (rank_equal AND tb_greater)
-        tb_better_and_equal = self.model.NewBoolVar('')
-        self.model.AddBoolAnd([rank_equal, tb_greater]).OnlyEnforceIf(tb_better_and_equal)
-
-        self.model.AddBoolOr([rank_greater, tb_better_and_equal]).OnlyEnforceIf(is_better)
-        self.model.AddBoolAnd([rank_greater.Not(), tb_better_and_equal.Not()]).OnlyEnforceIf(is_better.Not())
-
-        return is_better
+        score = self.model.NewIntVar(2, 814, '')
+        self.model.Add(score == rank * 100 + hi)
+        return score
 
     def best_hand_from_seven(self, hole_cards, community):
         """
-        Find the best 5-card hand from 7 cards (2 hole + 5 community).
-        Returns (rank, tiebreakers) for the best hand.
-
-        Evaluates all C(7,5) = 21 combinations.
+        Best hand score from 7 cards (2 hole + 5 community): the max
+        hand_score over all C(7,5) = 21 combinations. AddMaxEquality is a
+        native, fully-reified global constraint, so this also fixes the old
+        code's bug of grabbing tiebreakers from an arbitrary combination --
+        there's only a single combined score now, and the max is exact.
         """
         all_cards = hole_cards + community
-
-        # All 21 combinations of 5 cards from 7
         combinations = [
-            [0,1,2,3,4], [0,1,2,3,5], [0,1,2,3,6], [0,1,2,4,5], [0,1,2,4,6],
-            [0,1,2,5,6], [0,1,3,4,5], [0,1,3,4,6], [0,1,3,5,6], [0,1,4,5,6],
-            [0,2,3,4,5], [0,2,3,4,6], [0,2,3,5,6], [0,2,4,5,6], [0,3,4,5,6],
-            [1,2,3,4,5], [1,2,3,4,6], [1,2,3,5,6], [1,2,4,5,6], [1,3,4,5,6],
-            [2,3,4,5,6],
+            [0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 3, 6], [0, 1, 2, 4, 5], [0, 1, 2, 4, 6],
+            [0, 1, 2, 5, 6], [0, 1, 3, 4, 5], [0, 1, 3, 4, 6], [0, 1, 3, 5, 6], [0, 1, 4, 5, 6],
+            [0, 2, 3, 4, 5], [0, 2, 3, 4, 6], [0, 2, 3, 5, 6], [0, 2, 4, 5, 6], [0, 3, 4, 5, 6],
+            [1, 2, 3, 4, 5], [1, 2, 3, 4, 6], [1, 2, 3, 5, 6], [1, 2, 4, 5, 6], [1, 3, 4, 5, 6],
+            [2, 3, 4, 5, 6],
         ]
 
-        # Evaluate all hands
-        hand_ranks = []
-        hand_tbs = []
+        scores = [self.hand_score([all_cards[i] for i in combo]) for combo in combinations]
+        best = self.model.NewIntVar(2, 814, '')
+        self.model.AddMaxEquality(best, scores)
+        return best
 
-        for combo in combinations:
-            hand = [all_cards[i] for i in combo]
-            rank, tbs = self.compute_hand_rank(hand)
-            hand_ranks.append(rank)
-            hand_tbs.append(tbs)
-
-        # Find maximum rank
-        best_rank = self.model.NewIntVar(0, 8, '')
-        best_tb = [self.model.NewIntVar(0, 12, '') for _ in range(5)]
-
-        # best_rank = max(hand_ranks)
-        self.model.AddMaxEquality(best_rank, hand_ranks)
-
-        # For tiebreakers, we'd need to find which hand has the max rank
-        # Simplified: just use first hand's tiebreakers (this is incorrect but simpler)
-        # A proper implementation would select tiebreakers of the hand with best_rank
-        for i in range(5):
-            best_tb[i] = hand_tbs[0][i]  # Simplified
-
-        return best_rank, best_tb
-
-    def add_game_constraints(self):
-        """Add constraints for all cut positions"""
+    def add_game_constraints_and_objective(self):
+        """
+        For each cut position, add a boolean "dealer wins this cut"
+        indicator (fully reified), then maximize the sum across all cuts
+        instead of asserting every one must hold. This makes the solve
+        anytime: even on a timeout you get the best deck found so far and a
+        proven upper bound, rather than a bare UNKNOWN.
+        """
         print(f"Generating constraints for all {self.num_cuts} cut positions...")
         print("(This may take a few minutes)")
         print()
 
+        win_indicators = []
         for cut in range(self.num_cuts):
             if cut % 10 == 0:
                 print(f"  Processing cut position {cut}/{self.num_cuts}...")
 
-            # Create cut deck
             cut_deck = [self.deck[(cut + i) % 52] for i in range(52)]
 
-            # Deal cards to players
-            player_hands = []
-            for p in range(self.num_players):
-                hole_cards = [cut_deck[2*p], cut_deck[2*p + 1]]
-                player_hands.append(hole_cards)
+            player_hands = [
+                [cut_deck[2 * p], cut_deck[2 * p + 1]] for p in range(self.num_players)
+            ]
+            community = [cut_deck[2 * self.num_players + i] for i in range(5)]
 
-            # Community cards
-            community = [cut_deck[2*self.num_players + i] for i in range(5)]
+            player_scores = [
+                self.best_hand_from_seven(player_hands[p], community)
+                for p in range(self.num_players)
+            ]
 
-            # Evaluate best hand for each player
-            player_best = []
-            for p in range(self.num_players):
-                rank, tbs = self.best_hand_from_seven(player_hands[p], community)
-                player_best.append((rank, tbs))
-
-            # Player 0 must beat all other players
+            beats_all = []
             for p in range(1, self.num_players):
-                p0_better = self.hand_is_better(
-                    player_best[0][0], player_best[0][1],
-                    player_best[p][0], player_best[p][1]
-                )
-                self.model.AddBoolAnd([p0_better])  # Assert it must be true
+                b = self.model.NewBoolVar('')
+                self.model.Add(player_scores[0] > player_scores[p]).OnlyEnforceIf(b)
+                self.model.Add(player_scores[0] <= player_scores[p]).OnlyEnforceIf(b.Not())
+                beats_all.append(b)
+
+            win = self.reify_and(beats_all)
+            win_indicators.append(win)
+
+        self.win_indicators = win_indicators
+        self.model.Maximize(sum(win_indicators))
 
         print()
         print("All constraints generated!")
 
     def solve(self, time_limit_seconds=3600):
-        """Solve the constraint model"""
+        """Solve the maximization model."""
         print(f"Starting CP-SAT solver (timeout: {time_limit_seconds}s)...")
         print()
 
@@ -423,34 +300,38 @@ class PokerCPSolver:
         elapsed = time.time() - start_time
 
         print()
-        print(f"Solver finished in {elapsed:.2f} seconds")
+        print(f"Solver finished in {elapsed:.2f} seconds (status: {solver.StatusName(status)})")
         print()
 
-        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            print("✓ SOLUTION FOUND!")
-            print()
-
-            print("Winning deck ordering:")
-            solution = []
-            for i in range(52):
-                card_val = solver.Value(self.deck[i])
-                solution.append(card_val)
-                print(f"  Position {i:2d}: {self.card_to_string(card_val)}")
-
-            print()
-            print("Deck as comma-separated card IDs:")
-            print(','.join(map(str, solution)))
-
-            return solution
-
-        elif status == cp_model.INFEASIBLE:
-            print("✗ INFEASIBLE: No deck ordering exists where player 0 wins all positions.")
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            bound = int(solver.BestObjectiveBound())
+            print(f"No feasible deck found within the time limit. Best known upper bound: {bound}/{self.num_cuts}.")
             return None
 
+        best = int(solver.ObjectiveValue())
+        bound = int(solver.BestObjectiveBound())
+
+        if status == cp_model.OPTIMAL:
+            if best == self.num_cuts:
+                print(f"✓ PROVEN OPTIMAL: a perfect deck exists -- dealer wins all {self.num_cuts}/{self.num_cuts} cuts.")
+            else:
+                print(f"✓ PROVEN OPTIMAL: the best any deck can do is {best}/{self.num_cuts} -- "
+                      f"a perfect deck ({self.num_cuts}/{self.num_cuts}) is impossible.")
         else:
-            print("? UNKNOWN: Solver could not determine feasibility (timeout or limit reached).")
-            print(f"   Try increasing the time limit (current: {time_limit_seconds}s)")
-            return None
+            print(f"Best found so far: {best}/{self.num_cuts} wins. "
+                  f"Proven upper bound: {bound}/{self.num_cuts} (hit the time limit, not proven optimal).")
+
+        solution = [solver.Value(c) for c in self.deck]
+        print()
+        print("Best deck ordering found:")
+        for i, card_val in enumerate(solution):
+            print(f"  Position {i:2d}: {self.card_to_string(card_val)}")
+
+        print()
+        print("Deck as comma-separated card IDs:")
+        print(','.join(map(str, solution)))
+
+        return solution, best, bound
 
 
 def main():
@@ -475,6 +356,12 @@ def main():
         default=52,
         help='Number of cut positions to check (default: 52)'
     )
+    parser.add_argument(
+        '--hint',
+        type=str,
+        default=None,
+        help='Path to a file containing a comma-separated 52-card-id deck to seed the search with'
+    )
 
     args = parser.parse_args()
 
@@ -488,12 +375,16 @@ def main():
 
     solver = PokerCPSolver(num_players=args.num_players, num_cuts=args.num_cuts)
     solver.create_deck_variables()
-    solver.add_game_constraints()
-    solution = solver.solve(time_limit_seconds=args.timeout)
+    if args.hint:
+        with open(args.hint) as f:
+            hint_deck = [int(x) for x in f.read().strip().split(',')]
+        solver.apply_hint(hint_deck)
+    solver.add_game_constraints_and_objective()
+    result = solver.solve(time_limit_seconds=args.timeout)
 
-    if solution:
+    if result:
         print()
-        print("✓ Success! Found a valid deck ordering.")
+        print("✓ Success!")
 
 
 if __name__ == '__main__':
