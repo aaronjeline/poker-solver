@@ -2,15 +2,14 @@
 """
 Poker Deck Optimization using Google OR-Tools CP-SAT Solver
 
-Finds the deck ordering that maximizes the number of cut positions at which
-player 0 (the dealer) wins, using constraint programming.
-
-Framed as a Maximize objective rather than a single feasibility check: even
-under a timeout, CP-SAT reports the best deck found so far plus a proven
-upper bound on how good any deck could possibly be. If the optimal is proven
-equal to num_cuts, a perfect deck exists (and this is it). If the optimal is
-proven less than num_cuts, no perfect deck exists -- and you still get the
-best achievable deck instead of a bare "infeasible".
+Decides whether a 52-card deck ordering exists where player 0 (the dealer)
+wins at every one of num_cuts cut positions -- a pure feasibility question,
+not an optimization. (An earlier version of this script framed it as
+Maximize(wins), which is the right tool if you want a best-effort deck under
+a timeout; if you only care about the yes/no answer, asserting every win as
+a hard constraint is the tighter question to ask the solver -- proving "not
+exactly num_cuts" is strictly less work than proving the exact optimum
+wherever it happens to sit.)
 """
 
 import argparse
@@ -54,6 +53,54 @@ class PokerCPSolver:
         assert len(hint_deck) == 52, "hint deck must have exactly 52 cards"
         for card_var, val in zip(self.deck, hint_deck):
             self.model.AddHint(card_var, val)
+
+    def extract_all_card_properties(self):
+        """
+        Extract (suit, value) for each of the 52 deck positions exactly
+        once. The same deck position is reused across every one of the 52
+        cut rotations (a cut only relabels which position is "first"), so
+        deriving suit/value fresh on every use -- as the original script did
+        -- rebuilt the same equality constraint for the same card dozens of
+        times over. Cache it once here and index into it everywhere else.
+        """
+        self.deck_suits = []
+        self.deck_values = []
+        for card_var in self.deck:
+            suit, value = self.extract_card_properties(card_var)
+            self.deck_suits.append(suit)
+            self.deck_values.append(value)
+
+    def add_suit_symmetry_breaking(self):
+        """
+        Relabeling the 4 suits is a symmetry of this problem: permuting
+        suits never changes which hand wins any comparison, since only
+        same-suit-ness (for a flush) matters, never which particular suit.
+        That's a 4! = 24-fold symmetry in the solution space the search
+        would otherwise have to rediscover independently for every
+        equivalent deck it explores.
+
+        Break it by forcing the first deck position (scanning 0..51) at
+        which suit value v appears to come before the first position suit
+        v+1 appears, for v = 0,1,2. Exactly one of the 24 relabelings of any
+        given deck satisfies this, so it picks a single canonical
+        representative per symmetric equivalence class without excluding
+        any class -- satisfiability is unaffected, only redundant search is.
+        """
+        first_occ = []
+        for v in range(4):
+            is_v = [self.reify_eq(s, v) for s in self.deck_suits]
+            pos_or_absent = []
+            for i, b in enumerate(is_v):
+                p = self.model.NewIntVar(0, 52, '')
+                self.model.Add(p == i).OnlyEnforceIf(b)
+                self.model.Add(p == 52).OnlyEnforceIf(b.Not())
+                pos_or_absent.append(p)
+            fo = self.model.NewIntVar(0, 52, '')
+            self.model.AddMinEquality(fo, pos_or_absent)
+            first_occ.append(fo)
+
+        for v in range(3):
+            self.model.Add(first_occ[v] < first_occ[v + 1])
 
     # -- reification helpers -------------------------------------------------
     # CP-SAT booleans built from `.OnlyEnforceIf(x)` alone only constrain the
@@ -115,13 +162,19 @@ class PokerCPSolver:
             v[i], v[j] = lo, hi
         return v
 
-    def hand_score(self, cards):
+    def hand_score(self, card_props):
         """
         Score a 5-card hand as a single comparable integer: rank * 100 + hi,
         matching the simplified (rank, high_card) scoring the rest of this
         project uses (see ../src/hands.rs::score_five_cards) so a solution
         found here means the same thing as a win anywhere else in the
         codebase.
+
+        card_props is a list of 5 (suit, value) pairs, already extracted by
+        extract_all_card_properties -- this avoids re-deriving suit/value
+        (and re-asserting the same equality constraint) for the same
+        underlying deck position every time it shows up in a different cut
+        rotation or 5-card combination.
 
         Once the 5 values are sorted, equal values are necessarily
         contiguous, so the whole pair/two-pair/trips/full-house/quad pattern
@@ -133,8 +186,8 @@ class PokerCPSolver:
         ranks never collide -- both families can be summed directly as
         mutually-exclusive weighted booleans, no priority cascade needed.
         """
-        values = [self.extract_card_properties(c)[1] for c in cards]
-        suits = [self.extract_card_properties(c)[0] for c in cards]
+        suits = [s for s, _ in card_props]
+        values = [val for _, val in card_props]
         v = self.sort5(values)
 
         e01 = self.reify_eq(v[0], v[1])
@@ -218,7 +271,7 @@ class PokerCPSolver:
         self.model.Add(score == rank * 100 + hi)
         return score
 
-    def best_hand_from_seven(self, hole_cards, community):
+    def best_hand_from_seven(self, hole_props, community_props):
         """
         Best hand score from 7 cards (2 hole + 5 community): the max
         hand_score over all C(7,5) = 21 combinations. AddMaxEquality is a
@@ -226,7 +279,7 @@ class PokerCPSolver:
         code's bug of grabbing tiebreakers from an arbitrary combination --
         there's only a single combined score now, and the max is exact.
         """
-        all_cards = hole_cards + community
+        all_props = hole_props + community_props
         combinations = [
             [0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 3, 6], [0, 1, 2, 4, 5], [0, 1, 2, 4, 6],
             [0, 1, 2, 5, 6], [0, 1, 3, 4, 5], [0, 1, 3, 4, 6], [0, 1, 3, 5, 6], [0, 1, 4, 5, 6],
@@ -235,58 +288,51 @@ class PokerCPSolver:
             [2, 3, 4, 5, 6],
         ]
 
-        scores = [self.hand_score([all_cards[i] for i in combo]) for combo in combinations]
+        scores = [self.hand_score([all_props[i] for i in combo]) for combo in combinations]
         best = self.model.NewIntVar(2, 814, '')
         self.model.AddMaxEquality(best, scores)
         return best
 
-    def add_game_constraints_and_objective(self):
+    def add_game_constraints(self):
         """
-        For each cut position, add a boolean "dealer wins this cut"
-        indicator (fully reified), then maximize the sum across all cuts
-        instead of asserting every one must hold. This makes the solve
-        anytime: even on a timeout you get the best deck found so far and a
-        proven upper bound, rather than a bare UNKNOWN.
+        For each cut position, require player 0's best hand to strictly
+        beat every other player's -- a hard constraint, not an objective.
+        This is the minimal, tightest statement of "does a perfect deck
+        exist": proving this infeasible establishes exactly the fact we
+        want (no deck wins every cut) without also pinning down the exact
+        achievable maximum, which a Maximize formulation would have to do.
         """
         print(f"Generating constraints for all {self.num_cuts} cut positions...")
         print("(This may take a few minutes)")
         print()
 
-        win_indicators = []
         for cut in range(self.num_cuts):
             if cut % 10 == 0:
                 print(f"  Processing cut position {cut}/{self.num_cuts}...")
 
-            cut_deck = [self.deck[(cut + i) % 52] for i in range(52)]
+            cut_props = [
+                (self.deck_suits[(cut + i) % 52], self.deck_values[(cut + i) % 52])
+                for i in range(52)
+            ]
 
             player_hands = [
-                [cut_deck[2 * p], cut_deck[2 * p + 1]] for p in range(self.num_players)
+                [cut_props[2 * p], cut_props[2 * p + 1]] for p in range(self.num_players)
             ]
-            community = [cut_deck[2 * self.num_players + i] for i in range(5)]
+            community = [cut_props[2 * self.num_players + i] for i in range(5)]
 
             player_scores = [
                 self.best_hand_from_seven(player_hands[p], community)
                 for p in range(self.num_players)
             ]
 
-            beats_all = []
             for p in range(1, self.num_players):
-                b = self.model.NewBoolVar('')
-                self.model.Add(player_scores[0] > player_scores[p]).OnlyEnforceIf(b)
-                self.model.Add(player_scores[0] <= player_scores[p]).OnlyEnforceIf(b.Not())
-                beats_all.append(b)
-
-            win = self.reify_and(beats_all)
-            win_indicators.append(win)
-
-        self.win_indicators = win_indicators
-        self.model.Maximize(sum(win_indicators))
+                self.model.Add(player_scores[0] > player_scores[p])
 
         print()
         print("All constraints generated!")
 
     def solve(self, time_limit_seconds=3600):
-        """Solve the maximization model."""
+        """Check feasibility: does a deck exist winning all num_cuts cuts?"""
         print(f"Starting CP-SAT solver (timeout: {time_limit_seconds}s)...")
         print()
 
@@ -303,35 +349,24 @@ class PokerCPSolver:
         print(f"Solver finished in {elapsed:.2f} seconds (status: {solver.StatusName(status)})")
         print()
 
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            bound = int(solver.BestObjectiveBound())
-            print(f"No feasible deck found within the time limit. Best known upper bound: {bound}/{self.num_cuts}.")
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            print(f"✓ SAT: a deck exists where player 0 wins all {self.num_cuts}/{self.num_cuts} cuts.")
+            solution = [solver.Value(c) for c in self.deck]
+            print()
+            print("Winning deck ordering:")
+            for i, card_val in enumerate(solution):
+                print(f"  Position {i:2d}: {self.card_to_string(card_val)}")
+            print()
+            print("Deck as comma-separated card IDs:")
+            print(','.join(map(str, solution)))
+            return solution
+        elif status == cp_model.INFEASIBLE:
+            print(f"✗ UNSAT: no deck exists where player 0 wins all {self.num_cuts}/{self.num_cuts} cuts.")
             return None
-
-        best = int(solver.ObjectiveValue())
-        bound = int(solver.BestObjectiveBound())
-
-        if status == cp_model.OPTIMAL:
-            if best == self.num_cuts:
-                print(f"✓ PROVEN OPTIMAL: a perfect deck exists -- dealer wins all {self.num_cuts}/{self.num_cuts} cuts.")
-            else:
-                print(f"✓ PROVEN OPTIMAL: the best any deck can do is {best}/{self.num_cuts} -- "
-                      f"a perfect deck ({self.num_cuts}/{self.num_cuts}) is impossible.")
         else:
-            print(f"Best found so far: {best}/{self.num_cuts} wins. "
-                  f"Proven upper bound: {bound}/{self.num_cuts} (hit the time limit, not proven optimal).")
-
-        solution = [solver.Value(c) for c in self.deck]
-        print()
-        print("Best deck ordering found:")
-        for i, card_val in enumerate(solution):
-            print(f"  Position {i:2d}: {self.card_to_string(card_val)}")
-
-        print()
-        print("Deck as comma-separated card IDs:")
-        print(','.join(map(str, solution)))
-
-        return solution, best, bound
+            print("? UNKNOWN: hit the time limit before determining feasibility.")
+            print(f"   Try increasing --timeout (current: {time_limit_seconds}s)")
+            return None
 
 
 def main():
@@ -375,11 +410,14 @@ def main():
 
     solver = PokerCPSolver(num_players=args.num_players, num_cuts=args.num_cuts)
     solver.create_deck_variables()
+    solver.extract_all_card_properties()
     if args.hint:
         with open(args.hint) as f:
             hint_deck = [int(x) for x in f.read().strip().split(',')]
         solver.apply_hint(hint_deck)
-    solver.add_game_constraints_and_objective()
+    print("Adding suit symmetry-breaking constraint...")
+    solver.add_suit_symmetry_breaking()
+    solver.add_game_constraints()
     result = solver.solve(time_limit_seconds=args.timeout)
 
     if result:
