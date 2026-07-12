@@ -331,13 +331,18 @@ class PokerCPSolver:
         print()
         print("All constraints generated!")
 
-    def solve(self, time_limit_seconds=3600):
+    def solve(self, time_limit_seconds=None):
         """Check feasibility: does a deck exist winning all num_cuts cuts?"""
         print(f"Starting CP-SAT solver (timeout: {time_limit_seconds}s)...")
+        if time_limit_seconds is None:
+            print("Starting CP-SAT solver (no time limit)...")
+        else:
+            print(f"Starting CP-SAT solver (timeout: {time_limit_seconds}s)...")
         print()
 
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = time_limit_seconds
+        if time_limit_seconds is not None:
+            solver.parameters.max_time_in_seconds = time_limit_seconds
         solver.parameters.log_search_progress = True
         solver.parameters.num_search_workers = 8  # Parallel search
 
@@ -382,8 +387,8 @@ def main():
     parser.add_argument(
         '-t', '--timeout',
         type=int,
-        default=3600,
-        help='Solver timeout in seconds (default: 3600)'
+        default=None,
+        help='Solver timeout in seconds (default: no time limit)'
     )
     parser.add_argument(
         '-c', '--num-cuts',
@@ -405,7 +410,7 @@ def main():
     print("=" * 60)
     print(f"Players: {args.num_players}")
     print(f"Cut positions: {args.num_cuts}")
-    print(f"Timeout: {args.timeout} seconds")
+    print(f"Timeout: {args.timeout} seconds" if args.timeout is not None else "Timeout: none")
     print()
 
     solver = PokerCPSolver(num_players=args.num_players, num_cuts=args.num_cuts)
